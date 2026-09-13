@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.design/x/chann"
 
@@ -61,10 +62,20 @@ func (p *processor) worker(queue *chann.Chann[assetTask]) {
 	}
 }
 
+// processTimings holds the wall-clock duration in milliseconds of each
+// pipeline stage for a single processed asset.
+type processTimings struct {
+	checksumMs int64
+	metadataMs int64
+	thumbMs    int64
+}
+
 // process checksums a file, stores (or reuses) its asset, and links the file
 // row to the asset. An asset row existing implies its metadata and thumbnail
 // were already extracted.
 func (p *processor) process(task assetTask) error {
+	started := time.Now()
+
 	absolutePath := resolveLibraryPath(p.libraryLocation, task.Path)
 
 	info, err := os.Stat(absolutePath)
@@ -72,7 +83,11 @@ func (p *processor) process(task assetTask) error {
 		return fmt.Errorf("stat %s: %w", absolutePath, err)
 	}
 
+	var timings processTimings
+
+	checksumStart := time.Now()
 	checksum, err := fileChecksum(absolutePath)
+	timings.checksumMs = time.Since(checksumStart).Milliseconds()
 	if err != nil {
 		return fmt.Errorf("checksum %s: %w", absolutePath, err)
 	}
@@ -83,7 +98,7 @@ func (p *processor) process(task assetTask) error {
 	}
 
 	if asset == nil {
-		if asset, err = p.createAsset(task, absolutePath, checksum, info); err != nil {
+		if asset, timings, err = p.createAsset(task, absolutePath, checksum, info, timings); err != nil {
 			return err
 		}
 	}
@@ -92,7 +107,12 @@ func (p *processor) process(task assetTask) error {
 		return fmt.Errorf("link file %d to asset %d: %w", task.FileID, asset.ID, err)
 	}
 
-	log.Printf("processed file=%d path=%s asset=%d", task.FileID, task.Path, asset.ID)
+	log.Printf(
+		"processed file=%d path=%s asset=%d total_ms=%d checksum_ms=%d metadata_ms=%d thumbnail_ms=%d",
+		task.FileID, task.Path, asset.ID,
+		time.Since(started).Milliseconds(),
+		timings.checksumMs, timings.metadataMs, timings.thumbMs,
+	)
 	return nil
 }
 
@@ -100,10 +120,12 @@ func (p *processor) process(task assetTask) error {
 // its asset row. A concurrent worker may have stored the same content first;
 // the asset is re-fetched by checksum so the row with the canonical id is
 // returned.
-func (p *processor) createAsset(task assetTask, absolutePath string, checksum []byte, info os.FileInfo) (*Asset, error) {
+func (p *processor) createAsset(task assetTask, absolutePath string, checksum []byte, info os.FileInfo, timings processTimings) (*Asset, processTimings, error) {
+	metadataStart := time.Now()
 	meta, err := p.exiftool.ProbeMetadata(absolutePath)
+	timings.metadataMs = time.Since(metadataStart).Milliseconds()
 	if err != nil {
-		return nil, fmt.Errorf("probe metadata: %w", err)
+		return nil, timings, fmt.Errorf("probe metadata: %w", err)
 	}
 
 	mimeType := meta.MimeType
@@ -130,20 +152,22 @@ func (p *processor) createAsset(task assetTask, absolutePath string, checksum []
 		Orientation:    meta.Orientation,
 	}
 
+	thumbStart := time.Now()
 	if err := p.createThumbnail(checksum, absolutePath); err != nil {
 		log.Printf("thumbnail for %s: %v", task.Path, err)
 	}
+	timings.thumbMs = time.Since(thumbStart).Milliseconds()
 
 	if err := p.assets.insert(p.ctx, asset); err != nil {
-		return nil, fmt.Errorf("store asset for %s: %w", task.Path, err)
+		return nil, timings, fmt.Errorf("store asset for %s: %w", task.Path, err)
 	}
 
 	stored, err := p.assets.getByChecksum(p.ctx, checksum)
 	if err != nil {
-		return nil, fmt.Errorf("lookup asset by checksum: %w", err)
+		return nil, timings, fmt.Errorf("lookup asset by checksum: %w", err)
 	}
 
-	return stored, nil
+	return stored, timings, nil
 }
 
 func (p *processor) createThumbnail(checksum []byte, absolutePath string) error {

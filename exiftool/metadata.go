@@ -81,6 +81,19 @@ func (e *Exiftool) ProbeMetadata(path string) (MediaMetadata, error) {
 	m.City, _ = meta.GetString("City")
 	m.Country, _ = meta.GetString("Country")
 
+	// Fall back to exiftool's reverse geocoder when the file carries GPS
+	// coordinates but no city/country tags of its own.
+	if m.City == "" || m.Country == "" {
+		if m.Latitude != 0 || m.Longitude != 0 {
+			if m.City == "" {
+				m.City, _ = meta.GetString("GeolocationCity")
+			}
+			if m.Country == "" {
+				m.Country, _ = meta.GetString("GeolocationCountry")
+			}
+		}
+	}
+
 	for _, key := range []string{"DateTimeOriginal", "CreateDate"} {
 		if value, err := meta.GetString(key); err == nil {
 			if taken, ok := parseExifDate(value); ok {

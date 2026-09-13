@@ -36,6 +36,12 @@ func Extract() (*Exiftool, error) {
 	et, err := goexiftool.NewExiftool(
 		goexiftool.SetExiftoolBinaryPath(filepath.Join(dir, extractedFilename)),
 		goexiftool.NoPrintConversion(),
+		// Activates exiftool's reverse geocoder, which fills the
+		// Geolocation* tags from the embedded database. Neighborhood
+		// (PPLX) and historical (PPLH) place entries are excluded so
+		// cities resolve to proper populated places such as NYC.
+		goexiftool.Api("Geolocation"),
+		goexiftool.Api("GeolocFeature=-PPLX,-PPLH"),
 	)
 	if err != nil {
 		e.Close()
