@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 )
@@ -13,8 +14,13 @@ func openDatabase(libraryLocation string) (*sql.DB, error) {
 		return nil, fmt.Errorf("create library dir: %w", err)
 	}
 
-	dsn := "file:" + filepath.Join(dir, "imchlite.db") +
-		"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on"
+	dsn := (&url.URL{
+		Scheme: "file",
+		// URL escaping is required so characters like '#' or '?' in the
+		// library path are not misread as URI fragment/query separators.
+		Path:     filepath.Join(dir, "imchlite.db"),
+		RawQuery: "_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on",
+	}).String()
 
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {

@@ -18,7 +18,10 @@ type indexerState struct {
 	startedAt  time.Time
 	discovered atomic.Int64
 	processed  atomic.Int64
-	errored    atomic.Int64
+	// skipped counts files that needed no processing in this run because
+	// they were already processed by a previous run.
+	skipped   atomic.Int64
+	errored   atomic.Int64
 	completed  atomic.Bool
 	failed     atomic.Bool
 	errMsg     atomic.Pointer[string]
@@ -44,6 +47,7 @@ type indexStatus struct {
 	Processed  int64     `json:"processed"`
 	Errored    int64     `json:"errored"`
 	Phase      string    `json:"phase"`
+	ETASeconds int64     `json:"etaSeconds,omitempty"`
 	Completed  bool      `json:"completed"`
 	Failed     bool      `json:"failed"`
 	Error      string    `json:"error,omitempty"`
@@ -68,6 +72,16 @@ func (s *indexerState) status() indexStatus {
 		status.Phase = "processing"
 	default:
 		status.Phase = "completed"
+	}
+
+	// The ETA is based only on work performed in this run: skipped files
+	// were counted at walk speed (near-zero time), so including them in
+	// the rate would understate the remaining time.
+	done := status.Processed - int64(s.skipped.Load()) + status.Errored
+	remaining := status.Discovered - status.Processed - status.Errored
+	if status.Phase != "failed" && done > 0 && remaining > 0 {
+		elapsed := time.Since(s.startedAt)
+		status.ETASeconds = int64(elapsed / time.Duration(done) * time.Duration(remaining) / time.Second)
 	}
 
 	if msg := s.errMsg.Load(); msg != nil {
@@ -111,6 +125,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		fileByPath[file.Path] = file
 		fileByInode[file.Inode] = file
 	}
+	log.Printf("snapshot: %d known files, walking library", len(existingFiles))
 
 	seenPaths := map[string]struct{}{}
 
@@ -164,6 +179,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 			if existing.AssetID == nil {
 				queue.In() <- assetTask{FileID: existing.ID, Path: relativePath}
 			} else {
+				state.skipped.Add(1)
 				state.processed.Add(1)
 			}
 			return nil
@@ -196,6 +212,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		} else {
 			// The moved file's content is unchanged and already has an
 			// asset, so no processing is needed.
+			state.skipped.Add(1)
 			state.processed.Add(1)
 		}
 

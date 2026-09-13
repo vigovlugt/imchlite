@@ -434,6 +434,14 @@ function IndexerStats() {
   )
 }
 
+function formatEta(seconds: number) {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m`
+}
+
 function IndexerStatsBody({ status }: { status: IndexStatus }) {
   const percent =
     status.discovered > 0
@@ -447,6 +455,9 @@ function IndexerStatsBody({ status }: { status: IndexStatus }) {
         : status.phase === 'failed'
           ? 'Failed'
           : 'Completed'
+  const showEta =
+    status.etaSeconds !== undefined &&
+    (status.phase === 'indexing' || status.phase === 'processing')
 
   return (
     <div className="mt-2 space-y-1.5">
@@ -464,6 +475,11 @@ function IndexerStatsBody({ status }: { status: IndexStatus }) {
           style={{ width: `${percent}%` }}
         />
       </div>
+      {showEta && (
+        <p className="text-xs tabular-nums text-muted-foreground">
+          ~{formatEta(status.etaSeconds!)} remaining
+        </p>
+      )}
       {status.error && (
         <p className="pt-1 text-xs break-words text-destructive">{status.error}</p>
       )}

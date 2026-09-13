@@ -71,6 +71,7 @@ export interface IndexStatus {
   processed: number
   errored: number
   phase: IndexPhase
+  etaSeconds?: number
   completed: boolean
   failed: boolean
   error?: string

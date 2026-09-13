@@ -16,13 +16,107 @@ func applySidecars(libraryLocation, mediaPath string, asset *Asset) {
 	absolutePath := resolveLibraryPath(libraryLocation, mediaPath)
 
 	applySnapchatSidecar(absolutePath, asset)
+	applyGoogleSidecar(absolutePath, asset)
 	applyICloudSidecar(absolutePath, asset)
 	applyImmichSidecar(absolutePath, asset)
 }
 
-// applyImmichSidecar reads an Immich-style JSON sidecar ("<path>.json" or
-// "<path>.JSON") next to the media file and uses its dateTaken as the capture
-// time when present.
+// Google Takeout exports put a supplemental JSON sidecar next to every media
+// file. The JSON carries the media's original filename in its title field,
+// which is what these sidecars are matched on: sidecar filenames themselves
+// are unreliable, since Windows path-length limits truncate the
+// ".supplemental-metadata.json" suffix during disk copies ("X.jpg.supp.json",
+// "X.j.json", ...).
+type googleSidecarMetadata struct {
+	Title          string `json:"title"`
+	PhotoTakenTime *struct {
+		Timestamp string `json:"timestamp"`
+	} `json:"photoTakenTime"`
+}
+
+var googleDupSuffixRe = regexp.MustCompile(`^(.*)\(\d+\)(\.[^.]+)$`)
+
+var (
+	googleJSONCacheMu sync.Mutex
+	// dir -> media filename key -> capture time as UTC seconds.
+	googleJSONCache = map[string]map[string]int64{}
+)
+
+func applyGoogleSidecar(absolutePath string, asset *Asset) {
+	if asset.LocalDateTime != 0 {
+		return
+	}
+
+	dir := filepath.Dir(absolutePath)
+	taken, ok := googleTakenAt(dir, filepath.Base(absolutePath))
+	if !ok {
+		return
+	}
+
+	asset.LocalDateTime = taken
+}
+
+// Lookups try the exact name first, then the name with a Google duplicate
+// marker removed: for duplicates Takeout renames the media to "X(1).jpg"
+// but the sidecar's title stays "X.jpg" (and both copies share the same
+// photoTakenTime).
+func googleTakenAt(dir, fileName string) (int64, bool) {
+	index := googleJSONIndex(dir)
+
+	if taken, ok := index[strings.ToLower(fileName)]; ok {
+		return taken, taken != 0
+	}
+	if taken, ok := index[strings.ToLower(googleDupSuffixRe.ReplaceAllString(fileName, "$1$2"))]; ok {
+		return taken, taken != 0
+	}
+	return 0, false
+}
+
+func googleJSONIndex(dir string) map[string]int64 {
+	googleJSONCacheMu.Lock()
+	defer googleJSONCacheMu.Unlock()
+
+	if index, ok := googleJSONCache[dir]; ok {
+		return index
+	}
+
+	index := map[string]int64{}
+	entries, _ := os.ReadDir(dir)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			continue
+		}
+		indexGoogleJSON(filepath.Join(dir, entry.Name()), index)
+	}
+
+	googleJSONCache[dir] = index
+	return index
+}
+
+func indexGoogleJSON(path string, index map[string]int64) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	var sidecar googleSidecarMetadata
+	if err := json.Unmarshal(data, &sidecar); err != nil {
+		return
+	}
+	if sidecar.PhotoTakenTime == nil || sidecar.Title == "" {
+		return
+	}
+
+	taken, err := strconv.ParseInt(strings.TrimSpace(sidecar.PhotoTakenTime.Timestamp), 10, 64)
+	if err != nil {
+		return
+	}
+
+	title := strings.ToLower(strings.TrimSpace(sidecar.Title))
+	index[title] = taken
+	index[strings.ToLower(googleDupSuffixRe.ReplaceAllString(title, "$1$2"))] = taken
+}
+
 func applyImmichSidecar(absolutePath string, asset *Asset) {
 	type immichSidecarMetadata struct {
 		DateTaken string `json:"dateTaken"`
