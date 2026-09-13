@@ -124,6 +124,9 @@ func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRep
 	offlineFiles := []int64{}
 
 	for path, file := range fileByPath {
+		if file.IsOffline {
+			continue
+		}
 		if _, ok := seenPaths[path]; !ok {
 			offlineFiles = append(offlineFiles, file.ID)
 		}
