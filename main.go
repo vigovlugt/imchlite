@@ -4,7 +4,10 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -15,13 +18,15 @@ import (
 
 func main() {
 	libraryLocation := flag.String("library-location", "", "path to the imchlite library")
+	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
 	flag.Parse()
 
 	if *libraryLocation == "" {
 		log.Fatal("--library-location is required")
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	start := time.Now()
 	f, err := ffmpeg.Extract()
@@ -54,19 +59,34 @@ func main() {
 	assetRepo := NewAssetRepository(db)
 	processor := newProcessor(ctx, *libraryLocation, f, et, fileRepo, assetRepo)
 	queue := newAssetQueue()
+	state := newIndexerState()
 
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Go(func() {
-			processor.worker(queue)
+			processor.worker(queue, state)
 		})
 	}
 
-	if err := indexLibrary(ctx, *libraryLocation, fileRepo, assetRepo, queue); err != nil {
-		log.Fatalf("index library: %v", err)
+	// var closeQueue sync.Once
+	// closeQueueFn := func() { closeQueue.Do(func() { queue.Close() }) }
+
+	go func() {
+		log.Printf("indexing library %s", *libraryLocation)
+		if err := indexLibrary(ctx, *libraryLocation, fileRepo, assetRepo, queue, state); err != nil {
+			log.Printf("indexing failed: %v", err)
+		} else {
+			log.Printf("indexing completed")
+		}
+		// closeQueueFn()
+	}()
+
+	srv := newServer(*addr, state, assetRepo, *libraryLocation)
+	if err := runServer(ctx, srv); err != nil {
+		log.Fatalf("serve: %v", err)
 	}
 
-	// Close the queue and wait for the workers to drain it.
-	// queue.Close()
-	wg.Wait()
+	// Server stopped (signal received): cancel indexing and drain the queue.
+	// closeQueueFn()
+	// wg.Wait()
 }

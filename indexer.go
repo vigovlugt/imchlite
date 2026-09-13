@@ -6,9 +6,59 @@ import (
 	"io/fs"
 	"log"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 
 	"golang.design/x/chann"
 )
+
+// indexerState tracks live progress of the background indexer so the api can
+// report on it.
+type indexerState struct {
+	startedAt  time.Time
+	discovered atomic.Int64
+	processed  atomic.Int64
+	completed  atomic.Bool
+	failed     atomic.Bool
+	errMsg     atomic.Pointer[string]
+}
+
+func newIndexerState() *indexerState {
+	return &indexerState{startedAt: time.Now()}
+}
+
+func (s *indexerState) complete() {
+	s.completed.Store(true)
+}
+
+func (s *indexerState) fail(err error) {
+	msg := err.Error()
+	s.errMsg.Store(&msg)
+	s.failed.Store(true)
+}
+
+type indexStatus struct {
+	StartedAt  time.Time `json:"startedAt"`
+	Discovered int64     `json:"discovered"`
+	Processed  int64     `json:"processed"`
+	Completed  bool      `json:"completed"`
+	Failed     bool      `json:"failed"`
+	Error      string    `json:"error,omitempty"`
+}
+
+func (s *indexerState) status() indexStatus {
+	status := indexStatus{
+		StartedAt:  s.startedAt,
+		Discovered: s.discovered.Load(),
+		Processed:  s.processed.Load(),
+		Completed:  s.completed.Load(),
+		Failed:     s.failed.Load(),
+	}
+	if msg := s.errMsg.Load(); msg != nil {
+		status.Error = *msg
+	}
+	return status
+}
 
 // statInfo is the comparable filesystem identity of a file.
 type statInfo struct {
@@ -22,7 +72,18 @@ func fileStat(f File) statInfo {
 	return statInfo{inode: f.Inode, size: f.Size, mtimeS: f.MtimeS, mtimeNs: f.MtimeNs}
 }
 
-func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, assetRepo *assetRepository, queue *chann.Chann[assetTask]) error {
+// indexLibrary walks the library and records the run's outcome in the given
+// indexer state.
+func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, assetRepo *assetRepository, queue *chann.Chann[assetTask], state *indexerState) error {
+	if err := walkLibrary(ctx, libraryLocation, fileRepo, assetRepo, queue, state); err != nil {
+		state.fail(err)
+		return err
+	}
+	state.complete()
+	return nil
+}
+
+func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, assetRepo *assetRepository, queue *chann.Chann[assetTask], state *indexerState) error {
 	existingFiles, err := fileRepo.getAll(ctx)
 	if err != nil {
 		return fmt.Errorf("snapshot files: %w", err)
@@ -58,6 +119,8 @@ func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRep
 		if !isMediaPath(path) {
 			return nil
 		}
+
+		state.discovered.Add(1)
 
 		info, err := d.Info()
 		if err != nil {

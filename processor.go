@@ -55,11 +55,13 @@ func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg
 }
 
 // worker consumes asset tasks from the queue until it is closed.
-func (p *processor) worker(queue *chann.Chann[assetTask]) {
+func (p *processor) worker(queue *chann.Chann[assetTask], state *indexerState) {
 	for task := range queue.Out() {
 		if err := p.process(task); err != nil {
 			log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
+			continue
 		}
+		state.processed.Add(1)
 	}
 }
 
@@ -155,7 +157,7 @@ func (p *processor) createAsset(task assetTask, absolutePath string, checksum []
 
 	// immich-go style JSON sidecars are the source of truth for the capture
 	// time when present: override whatever the media file itself carries.
-	applySidecars(p.libraryLocation, task.Path, &asset)
+	applySidecars(p.libraryLocation, task.Path, asset)
 
 	thumbStart := time.Now()
 	if err := p.createThumbnail(checksum, absolutePath); err != nil {
