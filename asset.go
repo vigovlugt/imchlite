@@ -13,22 +13,21 @@ type Asset struct {
 	// timestamps (unix epoch seconds)
 	FileCreatedAt  int64
 	FileModifiedAt int64
-	TakenAt        int64
-	LocalDateTime  int64
+	// wall-clock capture time from EXIF, pinned to UTC (no zone info)
+	LocalDateTime int64
 
-	// TimeZone string
-	// Latitude float64
-	// Longitude float64
-	// City string
-	// Country string
+	// capture location and zone; empty/zero when unknown
+	TimeZone  string
+	Latitude  float64
+	Longitude float64
+	City      string
+	Country   string
 
 	// media dimensions
-	Width                int64
-	Height               int64
-	DurationMs           int64
-	Orientation          int64
-	MetadataExtractedAt  int64
-	ThumbnailExtractedAt int64
+	Width       int64
+	Height      int64
+	DurationMs  int64
+	Orientation int64
 
 	// Thumbhash []byte
 

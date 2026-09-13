@@ -31,25 +31,20 @@ func migration001(tx *sql.Tx) error {
 		    -- timestamps (unix epoch seconds)
 		    file_created_at integer,
 		    file_modified_at integer not null,
-		    taken_at integer,
+		    -- wall-clock capture time from EXIF, pinned to UTC (no zone info)
 		    local_date_time integer,
 
-		    -- time_zone text,
-		    -- latitude real,
-		    -- longitude real,
-		    -- city text,
-		    -- country text,
+		    time_zone text,
+		    latitude real,
+		    longitude real,
+		    city text,
+		    country text,
 
 		    -- media dimensions
 		    width integer,
 		    height integer,
 		    duration_ms integer,
 		    orientation integer,
-		    metadata_extracted_at integer,
-
-			thumbnail_extracted_at integer,
-
-		    -- thumbhash blob,
 
 		    -- user state
 		    is_favorite integer not null default 0,

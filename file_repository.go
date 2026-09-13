@@ -118,6 +118,16 @@ func (r *fileRepository) upsert(ctx context.Context, f NewFile) (int64, error) {
 	return res.LastInsertId()
 }
 
+// linkAsset attaches an asset to a file row.
+func (r *fileRepository) linkAsset(ctx context.Context, id, assetID int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`update files set asset_id = ?, updated_at = unixepoch() where id = ?`,
+		assetID, id); err != nil {
+		return fmt.Errorf("link file %d to asset %d: %w", id, assetID, err)
+	}
+	return nil
+}
+
 // updateStat replaces the filesystem identity of an existing file row, keeping
 // its asset link intact.
 func (r *fileRepository) updateStat(ctx context.Context, id int64, f NewFile) error {

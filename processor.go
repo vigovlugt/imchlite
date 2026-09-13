@@ -1,9 +1,18 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"fmt"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
 
 	"golang.design/x/chann"
+
+	exiftoolbin "github.com/vigovlugt/imchlite/exiftool"
+	"github.com/vigovlugt/imchlite/ffmpeg"
 )
 
 type assetTask struct {
@@ -15,9 +24,155 @@ func newAssetQueue() *chann.Chann[assetTask] {
 	return chann.New[assetTask]()
 }
 
-// processWorker consumes asset tasks from the queue until it is closed.
-func processWorker(queue *chann.Chann[assetTask]) {
-	for task := range queue.Out() {
-		log.Printf("processed file=%d path=%s", task.FileID, task.Path)
+const (
+	thumbnailSize    = 256
+	thumbnailQuality = 80
+)
+
+// processor holds the shared dependencies of the asset workers.
+type processor struct {
+	ctx             context.Context
+	libraryLocation string
+	ffmpeg          *ffmpeg.FFmpeg
+	exiftool        *exiftoolbin.Exiftool
+	files           *fileRepository
+	assets          *assetRepository
+}
+
+// newProcessor creates a processor sharing the given repositories and
+// extracted ffmpeg binary.
+func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, et *exiftoolbin.Exiftool, files *fileRepository, assets *assetRepository) *processor {
+	return &processor{
+		ctx:             ctx,
+		libraryLocation: libraryLocation,
+		ffmpeg:          ff,
+		exiftool:        et,
+		files:           files,
+		assets:          assets,
 	}
+}
+
+// worker consumes asset tasks from the queue until it is closed.
+func (p *processor) worker(queue *chann.Chann[assetTask]) {
+	for task := range queue.Out() {
+		if err := p.process(task); err != nil {
+			log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
+		}
+	}
+}
+
+// process checksums a file, stores (or reuses) its asset, and links the file
+// row to the asset. An asset row existing implies its metadata and thumbnail
+// were already extracted.
+func (p *processor) process(task assetTask) error {
+	absolutePath := resolveLibraryPath(p.libraryLocation, task.Path)
+
+	info, err := os.Stat(absolutePath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", absolutePath, err)
+	}
+
+	checksum, err := fileChecksum(absolutePath)
+	if err != nil {
+		return fmt.Errorf("checksum %s: %w", absolutePath, err)
+	}
+
+	asset, err := p.assets.getByChecksum(p.ctx, checksum)
+	if err != nil {
+		return fmt.Errorf("lookup asset by checksum: %w", err)
+	}
+
+	if asset == nil {
+		if asset, err = p.createAsset(task, absolutePath, checksum, info); err != nil {
+			return err
+		}
+	}
+
+	if err := p.files.linkAsset(p.ctx, task.FileID, asset.ID); err != nil {
+		return fmt.Errorf("link file %d to asset %d: %w", task.FileID, asset.ID, err)
+	}
+
+	log.Printf("processed file=%d path=%s asset=%d", task.FileID, task.Path, asset.ID)
+	return nil
+}
+
+// createAsset probes the file's metadata, extracts the thumbnail and inserts
+// its asset row. A concurrent worker may have stored the same content first;
+// the asset is re-fetched by checksum so the row with the canonical id is
+// returned.
+func (p *processor) createAsset(task assetTask, absolutePath string, checksum []byte, info os.FileInfo) (*Asset, error) {
+	meta, err := p.exiftool.ProbeMetadata(absolutePath)
+	if err != nil {
+		return nil, fmt.Errorf("probe metadata: %w", err)
+	}
+
+	mimeType := meta.MimeType
+	if mimeType == "" {
+		mimeType = exiftoolbin.MimeTypeFromPath(task.Path)
+	}
+
+	mtime := info.ModTime().Unix()
+	asset := &Asset{
+		Checksum:       checksum,
+		MimeType:       mimeType,
+		Type:           typeFromPath(task.Path),
+		FileCreatedAt:  mtime,
+		FileModifiedAt: mtime,
+		LocalDateTime:  meta.LocalTakenAt,
+		TimeZone:       meta.TimeZone,
+		Latitude:       meta.Latitude,
+		Longitude:      meta.Longitude,
+		City:           meta.City,
+		Country:        meta.Country,
+		Width:          meta.Width,
+		Height:         meta.Height,
+		DurationMs:     meta.DurationMs,
+		Orientation:    meta.Orientation,
+	}
+
+	if err := p.createThumbnail(checksum, absolutePath); err != nil {
+		log.Printf("thumbnail for %s: %v", task.Path, err)
+	}
+
+	if err := p.assets.insert(p.ctx, asset); err != nil {
+		return nil, fmt.Errorf("store asset for %s: %w", task.Path, err)
+	}
+
+	stored, err := p.assets.getByChecksum(p.ctx, checksum)
+	if err != nil {
+		return nil, fmt.Errorf("lookup asset by checksum: %w", err)
+	}
+
+	return stored, nil
+}
+
+func (p *processor) createThumbnail(checksum []byte, absolutePath string) error {
+	dir := filepath.Join(p.libraryLocation, ".imchlite", "thumbnails")
+	hex := fmt.Sprintf("%x", checksum)
+	dest := filepath.Join(dir, hex[0:2], hex[2:4], hex+".webp")
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return fmt.Errorf("create thumbnail dir: %w", err)
+	}
+
+	if err := p.ffmpeg.Thumbnail(p.ctx, absolutePath, dest, thumbnailSize, thumbnailQuality); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// fileChecksum returns the sha256 of a file's bytes.
+func fileChecksum(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
 }
