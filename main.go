@@ -67,6 +67,6 @@ func main() {
 	}
 
 	// Close the queue and wait for the workers to drain it.
-	queue.Close()
+	// queue.Close()
 	wg.Wait()
 }
