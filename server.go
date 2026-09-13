@@ -33,6 +33,8 @@ func newServer(addr string, state *indexerState, assets *assetRepository, librar
 
 	registerAssetRoutes(mux, assets, libraryLocation)
 
+	mux.Handle("GET /", frontendHandler())
+
 	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,

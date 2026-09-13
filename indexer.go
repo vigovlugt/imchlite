@@ -18,6 +18,7 @@ type indexerState struct {
 	startedAt  time.Time
 	discovered atomic.Int64
 	processed  atomic.Int64
+	errored    atomic.Int64
 	completed  atomic.Bool
 	failed     atomic.Bool
 	errMsg     atomic.Pointer[string]
@@ -41,6 +42,8 @@ type indexStatus struct {
 	StartedAt  time.Time `json:"startedAt"`
 	Discovered int64     `json:"discovered"`
 	Processed  int64     `json:"processed"`
+	Errored    int64     `json:"errored"`
+	Phase      string    `json:"phase"`
 	Completed  bool      `json:"completed"`
 	Failed     bool      `json:"failed"`
 	Error      string    `json:"error,omitempty"`
@@ -51,9 +54,22 @@ func (s *indexerState) status() indexStatus {
 		StartedAt:  s.startedAt,
 		Discovered: s.discovered.Load(),
 		Processed:  s.processed.Load(),
+		Errored:    s.errored.Load(),
 		Completed:  s.completed.Load(),
 		Failed:     s.failed.Load(),
 	}
+
+	switch {
+	case s.failed.Load():
+		status.Phase = "failed"
+	case !s.completed.Load():
+		status.Phase = "indexing"
+	case s.processed.Load()+s.errored.Load() < s.discovered.Load():
+		status.Phase = "processing"
+	default:
+		status.Phase = "completed"
+	}
+
 	if msg := s.errMsg.Load(); msg != nil {
 		status.Error = *msg
 	}
@@ -147,6 +163,8 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		if existing, ok := fileByPath[relativePath]; ok && fileStat(existing) == stat && !existing.IsOffline {
 			if existing.AssetID == nil {
 				queue.In() <- assetTask{FileID: existing.ID, Path: relativePath}
+			} else {
+				state.processed.Add(1)
 			}
 			return nil
 		}
@@ -175,6 +193,10 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		if assetID == nil {
 			// The row has no asset yet; notify the asset worker.
 			queue.In() <- assetTask{FileID: fileID, Path: relativePath}
+		} else {
+			// The moved file's content is unchanged and already has an
+			// asset, so no processing is needed.
+			state.processed.Add(1)
 		}
 
 		return nil

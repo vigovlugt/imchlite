@@ -63,8 +63,25 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return (await res.json()) as T
 }
 
+export type IndexPhase = 'indexing' | 'processing' | 'completed' | 'failed'
+
+export interface IndexStatus {
+  startedAt: string
+  discovered: number
+  processed: number
+  errored: number
+  phase: IndexPhase
+  completed: boolean
+  failed: boolean
+  error?: string
+}
+
 export function fetchFacets(signal?: AbortSignal): Promise<Facets> {
   return getJson<Facets>('/api/facets', signal)
+}
+
+export function fetchIndexStatus(signal?: AbortSignal): Promise<IndexStatus> {
+  return getJson<IndexStatus>('/api/index/status', signal)
 }
 
 function filtersToParams(f: AssetFilters, cursor?: string): string {

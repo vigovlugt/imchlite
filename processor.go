@@ -59,6 +59,7 @@ func (p *processor) worker(queue *chann.Chann[assetTask], state *indexerState) {
 	for task := range queue.Out() {
 		if err := p.process(task); err != nil {
 			log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
+			state.errored.Add(1)
 			continue
 		}
 		state.processed.Add(1)

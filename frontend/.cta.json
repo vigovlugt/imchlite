@@ -1,5 +1,5 @@
 {
-  "projectName": "frontend",
+  "projectName": "imchlite-frontend",
   "mode": "file-router",
   "typescript": true,
   "packageManager": "bun",

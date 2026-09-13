@@ -58,7 +58,7 @@ func (f *FFmpeg) Thumbnail(ctx context.Context, source, dest string, size, quali
 	_, _, err := f.Run(ctx,
 		"-y",
 		"-i", source,
-		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", size, size),
+		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", size, size),
 		"-frames:v", "1",
 		"-q:v", strconv.Itoa(quality),
 		dest,
