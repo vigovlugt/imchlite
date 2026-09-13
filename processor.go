@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -209,32 +208,3 @@ func fileChecksum(path string) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
-func applySidecars(libraryLocation, mediaPath string, asset *Asset) {
-	type immichSidecarMetadata struct {
-		DateTaken string `json:"dateTaken"`
-	}
-
-	absolutePath := resolveLibraryPath(libraryLocation, mediaPath)
-
-	for _, ext := range []string{".JSON", ".json"} {
-		data, err := os.ReadFile(absolutePath + ext)
-		if err != nil {
-			continue
-		}
-
-		var sidecar immichSidecarMetadata
-		if err := json.Unmarshal(data, &sidecar); err != nil {
-			continue
-		}
-
-		taken, err := time.Parse(time.RFC3339, sidecar.DateTaken)
-		if err != nil {
-			continue
-		}
-
-		asset.LocalDateTime = time.Date(
-			taken.Year(), taken.Month(), taken.Day(),
-			taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
-		).Unix()
-	}
-}
