@@ -37,11 +37,11 @@ func main() {
 	log.Printf("debug: extracted ffmpeg in %s", time.Since(start))
 
 	start = time.Now()
-	et, err := exiftoolbin.Extract()
+	exiftoolDir, err := exiftoolbin.Setup()
 	if err != nil {
 		log.Fatalf("extract exiftool: %v", err)
 	}
-	defer et.Close()
+	defer exiftoolbin.Teardown(exiftoolDir)
 	log.Printf("debug: extracted exiftool in %s", time.Since(start))
 
 	db, err := openDatabase(*libraryLocation)
@@ -57,14 +57,20 @@ func main() {
 
 	fileRepo := NewFileRepository(db)
 	assetRepo := NewAssetRepository(db)
-	processor := newProcessor(ctx, *libraryLocation, f, et, fileRepo, assetRepo)
+	processor := newProcessor(ctx, *libraryLocation, f, fileRepo, assetRepo)
 	queue := newAssetQueue()
 	state := newIndexerState()
 
 	var wg sync.WaitGroup
-	for range 2 {
+	for range 4 {
+		et, err := exiftoolbin.New(exiftoolDir)
+		if err != nil {
+			log.Fatalf("start exiftool: %v", err)
+		}
+		defer et.Close()
+
 		wg.Go(func() {
-			processor.worker(queue, state)
+			processor.worker(et, queue, state)
 		})
 	}
 

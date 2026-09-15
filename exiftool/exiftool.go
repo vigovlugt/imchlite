@@ -1,13 +1,11 @@
-// Package exiftool embeds the exiftool distribution and extracts it to a
-// temporary directory at runtime, so go-exiftool can drive the binary
-// without exiftool being installed on the host.
 package exiftool
 
 import (
-	"bytes"
+	"bufio"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"mime"
@@ -18,67 +16,132 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-
-	goexiftool "github.com/barasher/go-exiftool"
 )
 
-// Exiftool wraps the extracted exiftool binary and the go-exiftool driver
-// talking to it.
 type Exiftool struct {
-	dir string
-	et  *goexiftool.Exiftool
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	stdout  *bufio.Scanner
+	counter int
+	mu      sync.Mutex
 }
 
-// Extract writes the embedded exiftool distribution to a temporary directory,
-// starts the go-exiftool driver against it and returns the ready-to-use
-// exiftool instance.
-func Extract() (*Exiftool, error) {
+// Setup extracts the embedded exiftool distribution into a temporary
+// directory and returns its path. The returned dir must be cleaned up with
+// Teardown.
+func Setup() (string, error) {
 	if len(filesRoot) == 0 {
-		return nil, fmt.Errorf("no embedded exiftool distribution for %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("no embedded exiftool distribution for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
 	dir, err := os.MkdirTemp("", "imchlite-exiftool-")
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
-	e := &Exiftool{dir: dir}
 	if err := writeTree(files, filesRoot, dir); err != nil {
-		e.Close()
-		return nil, err
+		Teardown(dir)
+		return "", err
 	}
 
-	et, err := goexiftool.NewExiftool(
-		goexiftool.SetExiftoolBinaryPath(filepath.Join(dir, extractedFilename)),
-		goexiftool.NoPrintConversion(),
-		// Activates exiftool's reverse geocoder, which fills the
-		// Geolocation* tags from the embedded database. Neighborhood
-		// (PPLX) and historical (PPLH) place entries are excluded so
-		// cities resolve to proper populated places such as NYC.
-		goexiftool.Api("Geolocation"),
-		goexiftool.Api("GeolocFeature=-PPLX,-PPLH"),
-	)
+	return dir, nil
+}
+
+// Teardown removes the exiftool distribution directory created by Setup.
+func Teardown(dir string) error {
+	return os.RemoveAll(dir)
+}
+
+// New starts an exiftool process using the distribution directory created
+// by Setup. Each instance is single-threaded; use one instance per goroutine.
+func New(dir string) (*Exiftool, error) {
+	cmd := exec.Command(filepath.Join(dir, extractedFilename), "-stay_open", "True", "-@", "-")
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		e.Close()
-		return nil, fmt.Errorf("init exiftool: %w", err)
+		return nil, fmt.Errorf("open exiftool stdin: %w", err)
 	}
-	e.et = et
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open exiftool stdout: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("open exiftool stderr: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start exiftool: %w", err)
+	}
+
+	e := &Exiftool{}
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			log.Printf("exiftool: %s", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("exiftool stderr: %v", err)
+		}
+	}()
+
+	e.cmd = cmd
+	e.stdin = stdin
+	e.stdout = bufio.NewScanner(stdout)
 
 	return e, nil
 }
 
-// Close shuts down the exiftool process and removes the extracted files.
 func (e *Exiftool) Close() error {
-	err := e.et.Close()
-	if rerr := os.RemoveAll(e.dir); err == nil {
-		err = rerr
+	if e.cmd != nil && e.cmd.Process != nil {
+		fmt.Fprintln(e.stdin, "-stay_open")
+		fmt.Fprintln(e.stdin, "False")
+
+		done := make(chan struct{})
+	e := &Exiftool{}
+
+	go func() {
+			e.cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			e.cmd.Process.Kill()
+			<-done
+		}
 	}
-	return err
+	return nil
 }
 
-// MediaMetadata holds the fields exiftool could extract from a file; every
-// field is zero when unknown.
+func (e *Exiftool) run(args ...string) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.counter++
+	ready := "{ready" + strconv.Itoa(e.counter) + "}"
+
+	for _, arg := range append(args, "-execute"+strconv.Itoa(e.counter)) {
+		if _, err := fmt.Fprintln(e.stdin, arg); err != nil {
+			return nil, fmt.Errorf("talk to exiftool: %w", err)
+		}
+	}
+
+	var response []byte
+	for e.stdout.Scan() {
+		if e.stdout.Text() == ready {
+			return response, nil
+		}
+		response = append(response, e.stdout.Bytes()...)
+		response = append(response, '\n')
+	}
+	if err := e.stdout.Err(); err != nil {
+		return nil, fmt.Errorf("read exiftool: %w", err)
+	}
+	return nil, fmt.Errorf("exiftool exited before responding")
+}
+
 type MediaMetadata struct {
 	Width        int64
 	Height       int64
@@ -94,60 +157,69 @@ type MediaMetadata struct {
 	Country   string
 }
 
-// ProbeMetadata extracts dimensions, duration, capture time, orientation and
-// mime type via exiftool. Failures are non-fatal: the asset is still stored
-// with whatever was found.
 func (e *Exiftool) ProbeMetadata(path string) (MediaMetadata, error) {
-	metas := e.et.ExtractMetadata(path)
-	if len(metas) == 0 {
-		log.Printf("exiftool returned no metadata for %s", path)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return MediaMetadata{}, fmt.Errorf("exiftool %s: %w", path, err)
+		}
+		return MediaMetadata{}, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return MediaMetadata{}, fmt.Errorf("exiftool %s: not a regular file", path)
+	}
+
+	response, err := e.run(
+		"-api", "Geolocation",
+		"-api", "GeolocFeature=-PPLX,-PPLH",
+		"-n", "-j", path,
+	)
+	if err != nil {
+		return MediaMetadata{}, fmt.Errorf("exiftool %s: %w", path, err)
+	}
+
+	var results []map[string]any
+	if err := json.Unmarshal(response, &results); err != nil {
+		return MediaMetadata{}, fmt.Errorf("parse exiftool output for %s: %w", path, err)
+	}
+	if len(results) == 0 {
 		return MediaMetadata{}, fmt.Errorf("exiftool returned no metadata for %s", path)
 	}
 
-	meta := metas[0]
-	if meta.Err != nil {
-		log.Printf("exiftool %s: %v", path, meta.Err)
-		return MediaMetadata{}, fmt.Errorf("exiftool %s: %v", path, meta.Err)
-	}
+	fields := results[0]
 
 	var m MediaMetadata
-	m.Width = getIntField(meta, "ImageWidth", "ExifImageWidth")
-	m.Height = getIntField(meta, "ImageHeight", "ExifImageHeight")
+	m.Width = getIntField(fields, "ImageWidth", "ExifImageWidth")
+	m.Height = getIntField(fields, "ImageHeight", "ExifImageHeight")
 
-	if seconds, err := meta.GetFloat("Duration"); err == nil {
+	if seconds, err := fieldFloat(fields, "Duration"); err == nil {
 		m.DurationMs = int64(seconds * 1000)
 	}
 
-	m.Orientation, _ = meta.GetInt("Orientation")
-	m.MimeType, _ = meta.GetString("MIMEType")
+	m.Orientation, _ = fieldInt(fields, "Orientation")
+	m.MimeType, _ = fieldString(fields, "MIMEType")
 
-	// GPSLatitude/GPSLongitude are signed numbers under -n (no print
-	// conversion), so hemisphere signs come for free.
-	m.Latitude, _ = meta.GetFloat("GPSLatitude")
-	m.Longitude, _ = meta.GetFloat("GPSLongitude")
+	m.Latitude, _ = fieldFloat(fields, "GPSLatitude")
+	m.Longitude, _ = fieldFloat(fields, "GPSLongitude")
 
-	m.TimeZone, _ = meta.GetString("TimeZone")
-	m.City, _ = meta.GetString("City")
-	m.Country, _ = meta.GetString("Country")
+	m.TimeZone, _ = fieldString(fields, "TimeZone")
+	m.City, _ = fieldString(fields, "City")
+	m.Country, _ = fieldString(fields, "Country")
 
-	// Fall back to exiftool's reverse geocoder when the file carries GPS
-	// coordinates but no city/country tags of its own.
 	if m.City == "" || m.Country == "" {
 		if m.Latitude != 0 || m.Longitude != 0 {
 			if m.City == "" {
-				m.City, _ = meta.GetString("GeolocationCity")
+				m.City, _ = fieldString(fields, "GeolocationCity")
 			}
 			if m.Country == "" {
-				m.Country, _ = meta.GetString("GeolocationCountry")
+				m.Country, _ = fieldString(fields, "GeolocationCountry")
 			}
 		}
 	}
 
 	for _, key := range []string{"DateTimeOriginal", "CreateDate"} {
-		if value, err := meta.GetString(key); err == nil {
+		if value, ok := fieldString(fields, key); ok {
 			if taken, ok := parseExifDate(value); ok {
-				// Capture times carry no reliable zone; store the wall
-				// clock pinned to UTC so it survives any server TZ.
 				m.LocalTakenAt = time.Date(
 					taken.Year(), taken.Month(), taken.Day(),
 					taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
@@ -160,35 +232,23 @@ func (e *Exiftool) ProbeMetadata(path string) (MediaMetadata, error) {
 	return m, nil
 }
 
-// ReverseGeocode resolves the city and country nearest to the given
-// coordinates with exiftool's embedded geolocation database. No media input
-// is involved: the coordinates are passed through the API Geolocation
-// option's default value and exiftool runs without any input file.
 func (e *Exiftool) ReverseGeocode(latitude, longitude float64) (string, string, error) {
 	pos := strconv.FormatFloat(latitude, 'f', -1, 64) + "," + strconv.FormatFloat(longitude, 'f', -1, 64)
 
-	cmd := exec.Command(
-		filepath.Join(e.dir, extractedFilename),
-		"-api", "Geolocation="+pos,
-		// Same place filtering as the Extract() driver setup:
-		// neighborhood (PPLX) and historical (PPLH) entries excluded
-		// so cities resolve to proper populated places.
+	response, err := e.run(
 		"-api", "GeolocFeature=-PPLX,-PPLH",
+		"-api", "Geolocation="+pos,
 		"-GeolocationCity", "-GeolocationCountry", "-j",
 	)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", "", fmt.Errorf("exiftool reverse geocode: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	if err != nil {
+		return "", "", fmt.Errorf("exiftool reverse geocode: %w", err)
 	}
 
 	var results []struct {
 		GeolocationCity    string `json:"GeolocationCity"`
 		GeolocationCountry string `json:"GeolocationCountry"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+	if err := json.Unmarshal(response, &results); err != nil {
 		return "", "", fmt.Errorf("parse reverse geocode output: %w", err)
 	}
 	if len(results) == 0 {
@@ -197,8 +257,6 @@ func (e *Exiftool) ReverseGeocode(latitude, longitude float64) (string, string, 
 	return results[0].GeolocationCity, results[0].GeolocationCountry, nil
 }
 
-// MimeTypeFromPath guesses a file's mime type from its extension; it is
-// used as a fallback when exiftool reports none.
 func MimeTypeFromPath(p string) string {
 	ext, ok := lowerExtension(p)
 	if !ok {
@@ -207,9 +265,6 @@ func MimeTypeFromPath(p string) string {
 	return mime.TypeByExtension(ext)
 }
 
-// writeTree materializes the embedded tree rooted at root into dest,
-// preserving relative paths and marking every file executable since embed.FS
-// does not carry permission bits.
 func writeTree(files embed.FS, root, dest string) error {
 	return fs.WalkDir(files, root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -237,8 +292,6 @@ func writeTree(files embed.FS, root, dest string) error {
 	})
 }
 
-// lowerExtension returns the lowercased extension of p, false when it has
-// none.
 func lowerExtension(p string) (string, bool) {
 	ext := path.Ext(p)
 	if ext == "" {
@@ -247,19 +300,55 @@ func lowerExtension(p string) (string, bool) {
 	return strings.ToLower(ext), true
 }
 
-// getIntField returns the first present integer field among the keys.
-func getIntField(meta goexiftool.FileMetadata, keys ...string) int64 {
+func fieldString(fields map[string]any, key string) (string, bool) {
+	switch v := fields[key].(type) {
+	case nil:
+		return "", false
+	case string:
+		return v, true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case bool:
+		return strconv.FormatBool(v), true
+	default:
+		return fmt.Sprintf("%v", v), true
+	}
+}
+
+func fieldFloat(fields map[string]any, key string) (float64, error) {
+	switch v := fields[key].(type) {
+	case nil:
+		return 0, fmt.Errorf("field %s not found", key)
+	case float64:
+		return v, nil
+	case string:
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse float %s=%q: %w", key, v, err)
+		}
+		return f, nil
+	default:
+		return 0, fmt.Errorf("field %s is not numeric", key)
+	}
+}
+
+func fieldInt(fields map[string]any, key string) (int64, error) {
+	f, err := fieldFloat(fields, key)
+	if err != nil {
+		return 0, err
+	}
+	return int64(f), nil
+}
+
+func getIntField(fields map[string]any, keys ...string) int64 {
 	for _, key := range keys {
-		if value, err := meta.GetInt(key); err == nil {
+		if value, err := fieldInt(fields, key); err == nil {
 			return value
 		}
 	}
 	return 0
 }
 
-// parseExifDate parses exiftool's date strings such as
-// "2026:07:09 12:34:56". The location is arbitrary: only the wall-clock
-// fields are ever used, since EXIF carries no timezone.
 func parseExifDate(value string) (time.Time, bool) {
 	t, err := time.ParseInLocation("2006:01:02 15:04:05", value, time.UTC)
 	if err != nil {

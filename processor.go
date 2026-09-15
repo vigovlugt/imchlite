@@ -35,28 +35,27 @@ type processor struct {
 	ctx             context.Context
 	libraryLocation string
 	ffmpeg          *ffmpeg.FFmpeg
-	exiftool        *exiftoolbin.Exiftool
 	files           *fileRepository
 	assets          *assetRepository
 }
 
 // newProcessor creates a processor sharing the given repositories and
 // extracted ffmpeg binary.
-func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, et *exiftoolbin.Exiftool, files *fileRepository, assets *assetRepository) *processor {
+func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *fileRepository, assets *assetRepository) *processor {
 	return &processor{
 		ctx:             ctx,
 		libraryLocation: libraryLocation,
 		ffmpeg:          ff,
-		exiftool:        et,
 		files:           files,
 		assets:          assets,
 	}
 }
 
-// worker consumes asset tasks from the queue until it is closed.
-func (p *processor) worker(queue *chann.Chann[assetTask], state *indexerState) {
+// worker consumes asset tasks from the queue until it is closed. Each worker
+// runs its own exiftool process.
+func (p *processor) worker(et *exiftoolbin.Exiftool, queue *chann.Chann[assetTask], state *indexerState) {
 	for task := range queue.Out() {
-		if err := p.process(task); err != nil {
+		if err := p.process(task, et); err != nil {
 			log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
 			state.errored.Add(1)
 			continue
@@ -77,7 +76,7 @@ type processTimings struct {
 // process checksums a file, stores (or reuses) its asset, and links the file
 // row to the asset. An asset row existing implies its metadata and thumbnail
 // were already extracted.
-func (p *processor) process(task assetTask) error {
+func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 	started := time.Now()
 
 	absolutePath := resolveLibraryPath(p.libraryLocation, task.Path)
@@ -102,7 +101,7 @@ func (p *processor) process(task assetTask) error {
 	}
 
 	if asset == nil {
-		if asset, timings, err = p.createAsset(task, absolutePath, checksum, info, timings); err != nil {
+		if asset, timings, err = p.createAsset(task, et, absolutePath, checksum, info, timings); err != nil {
 			return err
 		}
 	}
@@ -124,9 +123,9 @@ func (p *processor) process(task assetTask) error {
 // its asset row. A concurrent worker may have stored the same content first;
 // the asset is re-fetched by checksum so the row with the canonical id is
 // returned.
-func (p *processor) createAsset(task assetTask, absolutePath string, checksum []byte, info os.FileInfo, timings processTimings) (*Asset, processTimings, error) {
+func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, timings processTimings) (*Asset, processTimings, error) {
 	metadataStart := time.Now()
-	meta, err := p.exiftool.ProbeMetadata(absolutePath)
+	meta, err := et.ProbeMetadata(absolutePath)
 	timings.metadataMs = time.Since(metadataStart).Milliseconds()
 	if err != nil {
 		return nil, timings, fmt.Errorf("probe metadata: %w", err)
@@ -159,7 +158,7 @@ func (p *processor) createAsset(task assetTask, absolutePath string, checksum []
 	applySidecars(p.libraryLocation, task.Path, asset)
 
 	geoStart := time.Now()
-	err = applyCityCountry(asset, p.exiftool)
+	err = applyCityCountry(asset, et)
 	if err != nil {
 		log.Printf("apply city country for %s: %v", task.Path, err)
 	}
