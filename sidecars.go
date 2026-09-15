@@ -32,47 +32,66 @@ type googleSidecarMetadata struct {
 	PhotoTakenTime *struct {
 		Timestamp string `json:"timestamp"`
 	} `json:"photoTakenTime"`
+	GeoDataExif *googleGeoData `json:"geoDataExif"`
+	GeoData     *googleGeoData `json:"geoData"`
+}
+
+type googleGeoData struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
 }
 
 var googleDupSuffixRe = regexp.MustCompile(`^(.*)\(\d+\)(\.[^.]+)$`)
 
 var (
 	googleJSONCacheMu sync.Mutex
-	// dir -> media filename key -> capture time as UTC seconds.
-	googleJSONCache = map[string]map[string]int64{}
+	// dir -> media filename key -> sidecar metadata.
+	googleJSONCache = map[string]map[string]googleSidecarInfo{}
 )
 
-func applyGoogleSidecar(absolutePath string, asset *Asset) {
-	if asset.LocalDateTime != 0 {
-		return
-	}
+// googleSidecarInfo holds the capture time (UTC seconds) and coordinates a
+// Google Takeout sidecar records for a media file.
+type googleSidecarInfo struct {
+	TakenAt   int64
+	Latitude  float64
+	Longitude float64
+}
 
+func applyGoogleSidecar(absolutePath string, asset *Asset) {
 	dir := filepath.Dir(absolutePath)
-	taken, ok := googleTakenAt(dir, filepath.Base(absolutePath))
+	info, ok := googleSidecarLookup(dir, filepath.Base(absolutePath))
 	if !ok {
 		return
 	}
 
-	asset.LocalDateTime = taken
+	if asset.LocalDateTime == 0 && info.TakenAt != 0 {
+		asset.LocalDateTime = info.TakenAt
+	}
+	// Takeout often records geoData as all zeros and keeps the real EXIF
+	// coordinates in geoDataExif; (0,0) is treated as "no location".
+	if info.Latitude != 0 || info.Longitude != 0 {
+		asset.Latitude = info.Latitude
+		asset.Longitude = info.Longitude
+	}
 }
 
 // Lookups try the exact name first, then the name with a Google duplicate
 // marker removed: for duplicates Takeout renames the media to "X(1).jpg"
 // but the sidecar's title stays "X.jpg" (and both copies share the same
 // photoTakenTime).
-func googleTakenAt(dir, fileName string) (int64, bool) {
+func googleSidecarLookup(dir, fileName string) (googleSidecarInfo, bool) {
 	index := googleJSONIndex(dir)
 
-	if taken, ok := index[strings.ToLower(fileName)]; ok {
-		return taken, taken != 0
+	if info, ok := index[strings.ToLower(fileName)]; ok {
+		return info, true
 	}
-	if taken, ok := index[strings.ToLower(googleDupSuffixRe.ReplaceAllString(fileName, "$1$2"))]; ok {
-		return taken, taken != 0
+	if info, ok := index[strings.ToLower(googleDupSuffixRe.ReplaceAllString(fileName, "$1$2"))]; ok {
+		return info, true
 	}
-	return 0, false
+	return googleSidecarInfo{}, false
 }
 
-func googleJSONIndex(dir string) map[string]int64 {
+func googleJSONIndex(dir string) map[string]googleSidecarInfo {
 	googleJSONCacheMu.Lock()
 	defer googleJSONCacheMu.Unlock()
 
@@ -80,7 +99,7 @@ func googleJSONIndex(dir string) map[string]int64 {
 		return index
 	}
 
-	index := map[string]int64{}
+	index := map[string]googleSidecarInfo{}
 	entries, _ := os.ReadDir(dir)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
@@ -93,7 +112,7 @@ func googleJSONIndex(dir string) map[string]int64 {
 	return index
 }
 
-func indexGoogleJSON(path string, index map[string]int64) {
+func indexGoogleJSON(path string, index map[string]googleSidecarInfo) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -103,23 +122,38 @@ func indexGoogleJSON(path string, index map[string]int64) {
 	if err := json.Unmarshal(data, &sidecar); err != nil {
 		return
 	}
-	if sidecar.PhotoTakenTime == nil || sidecar.Title == "" {
+	if sidecar.Title == "" {
 		return
 	}
 
-	taken, err := strconv.ParseInt(strings.TrimSpace(sidecar.PhotoTakenTime.Timestamp), 10, 64)
-	if err != nil {
-		return
+	var info googleSidecarInfo
+	if sidecar.PhotoTakenTime != nil {
+		taken, err := strconv.ParseInt(strings.TrimSpace(sidecar.PhotoTakenTime.Timestamp), 10, 64)
+		if err != nil {
+			return
+		}
+		info.TakenAt = taken
+	}
+
+	geo := sidecar.GeoDataExif
+	if geo == nil || (geo.Latitude == 0 && geo.Longitude == 0) {
+		geo = sidecar.GeoData
+	}
+	if geo != nil {
+		info.Latitude = geo.Latitude
+		info.Longitude = geo.Longitude
 	}
 
 	title := strings.ToLower(strings.TrimSpace(sidecar.Title))
-	index[title] = taken
-	index[strings.ToLower(googleDupSuffixRe.ReplaceAllString(title, "$1$2"))] = taken
+	index[title] = info
+	index[strings.ToLower(googleDupSuffixRe.ReplaceAllString(title, "$1$2"))] = info
 }
 
 func applyImmichSidecar(absolutePath string, asset *Asset) {
 	type immichSidecarMetadata struct {
-		DateTaken string `json:"dateTaken"`
+		DateTaken string  `json:"dateTaken"`
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
 	}
 
 	for _, ext := range []string{".JSON", ".json"} {
@@ -133,15 +167,17 @@ func applyImmichSidecar(absolutePath string, asset *Asset) {
 			continue
 		}
 
-		taken, err := time.Parse(time.RFC3339, sidecar.DateTaken)
-		if err != nil {
-			continue
+		if taken, err := time.Parse(time.RFC3339, sidecar.DateTaken); err == nil {
+			asset.LocalDateTime = time.Date(
+				taken.Year(), taken.Month(), taken.Day(),
+				taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
+			).Unix()
 		}
 
-		asset.LocalDateTime = time.Date(
-			taken.Year(), taken.Month(), taken.Day(),
-			taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
-		).Unix()
+		if sidecar.Latitude != 0 || sidecar.Longitude != 0 {
+			asset.Latitude = sidecar.Latitude
+			asset.Longitude = sidecar.Longitude
+		}
 	}
 }
 

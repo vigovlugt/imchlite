@@ -155,8 +155,8 @@ func (p *processor) createAsset(task assetTask, absolutePath string, checksum []
 		Orientation:    meta.Orientation,
 	}
 
-	// immich-go style JSON sidecars are the source of truth for the capture
-	// time when present: override whatever the media file itself carries.
+	// Sidecars are the source of truth for the capture time and location
+	// when present: override whatever the media file itself carries.
 	applySidecars(p.libraryLocation, task.Path, asset)
 
 	thumbStart := time.Now()
