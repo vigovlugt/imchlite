@@ -163,6 +163,9 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		if err != nil {
 			return fmt.Errorf("relativize %s: %w", path, err)
 		}
+		// Paths are stored and keyed with forward slashes on every platform;
+		// resolveLibraryPath converts back to OS-native form at I/O boundaries.
+		relativePath = filepath.ToSlash(relativePath)
 		seenPaths[relativePath] = struct{}{}
 
 		mtime := info.ModTime()

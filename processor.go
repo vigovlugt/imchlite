@@ -71,6 +71,7 @@ type processTimings struct {
 	checksumMs int64
 	metadataMs int64
 	thumbMs    int64
+	geoMs      int64
 }
 
 // process checksums a file, stores (or reuses) its asset, and links the file
@@ -111,10 +112,10 @@ func (p *processor) process(task assetTask) error {
 	}
 
 	log.Printf(
-		"processed file=%d path=%s asset=%d total_ms=%d checksum_ms=%d metadata_ms=%d thumbnail_ms=%d",
+		"processed file=%d path=%s asset=%d total_ms=%d checksum_ms=%d metadata_ms=%d thumbnail_ms=%d geo_ms=%d",
 		task.FileID, task.Path, asset.ID,
 		time.Since(started).Milliseconds(),
-		timings.checksumMs, timings.metadataMs, timings.thumbMs,
+		timings.checksumMs, timings.metadataMs, timings.thumbMs, timings.geoMs,
 	)
 	return nil
 }
@@ -155,9 +156,14 @@ func (p *processor) createAsset(task assetTask, absolutePath string, checksum []
 		Orientation:    meta.Orientation,
 	}
 
-	// Sidecars are the source of truth for the capture time and location
-	// when present: override whatever the media file itself carries.
 	applySidecars(p.libraryLocation, task.Path, asset)
+
+	geoStart := time.Now()
+	err = applyCityCountry(asset, p.exiftool)
+	if err != nil {
+		log.Printf("apply city country for %s: %v", task.Path, err)
+	}
+	timings.geoMs = time.Since(geoStart).Milliseconds()
 
 	thumbStart := time.Now()
 	if err := p.createThumbnail(checksum, absolutePath); err != nil {
@@ -208,3 +214,14 @@ func fileChecksum(path string) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
+func applyCityCountry(asset *Asset, exiftool *exiftoolbin.Exiftool) error {
+	if (asset.Latitude != 0 || asset.Longitude != 0) && (asset.City == "" || asset.Country == "") {
+		city, country, err := exiftool.ReverseGeocode(asset.Latitude, asset.Longitude)
+		if err != nil {
+			return fmt.Errorf("reverse geocode: %w", err)
+		}
+		asset.City = city
+		asset.Country = country
+	}
+	return nil
+}

@@ -15,10 +15,25 @@ const (
 )
 
 // resolveLibraryPath resolves a path stored relative to the library root for
-// filesystem access. Keeping this conversion at I/O boundaries makes a library
-// movable without invalidating paths persisted in its database.
+// filesystem access. Stored paths always use forward slashes; this is the
+// single conversion point back to OS-native separators. Keeping this
+// conversion at I/O boundaries makes a library movable without invalidating
+// paths persisted in its database.
 func resolveLibraryPath(libraryLocation, relativePath string) string {
-	return filepath.Join(libraryLocation, relativePath)
+	return filepath.FromSlash(filepath.Join(libraryLocation, relativePath))
+}
+
+// toSlashPaths normalizes user-supplied path filter values to forward slashes
+// so they match the separator used for paths persisted in the database.
+func toSlashPaths(paths []string) []string {
+	if paths == nil {
+		return nil
+	}
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = filepath.ToSlash(p)
+	}
+	return out
 }
 
 // Extension lists aligned with immich server mime-types (image + video only;

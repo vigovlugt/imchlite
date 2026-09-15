@@ -112,8 +112,8 @@ func decodeCursor(s string) (assetCursor, error) {
 // parameters are optional.
 func parseAssetQuery(vals url.Values) (assetQuery, error) {
 	q := assetQuery{
-		IncludePaths: vals["include_path"],
-		ExcludePaths: vals["exclude_path"],
+		IncludePaths: toSlashPaths(vals["include_path"]),
+		ExcludePaths: toSlashPaths(vals["exclude_path"]),
 	}
 
 	switch t := vals.Get("type"); t {
