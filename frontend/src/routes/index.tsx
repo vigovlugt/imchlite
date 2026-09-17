@@ -103,14 +103,12 @@ function groupByDay(assets: Asset[]): DayGroup[] {
   const groups: DayGroup[] = []
   let current: DayGroup | undefined
   for (const a of assets) {
-    const key = a.localDateTime ? toDateKey(new Date(a.localDateTime * 1000)) : 'unknown'
+    const time = captureTime(a)
+    const key = time ? toDateKey(new Date(time * 1000)) : 'unknown'
     if (!current || current.key !== key) {
       current = {
         key,
-        label:
-          key === 'unknown'
-            ? 'Unknown date'
-            : dayFormat.format(new Date(a.localDateTime! * 1000)),
+        label: key === 'unknown' ? 'Unknown date' : dayFormat.format(new Date(time * 1000)),
         assets: [],
       }
       groups.push(current)
@@ -118,6 +116,11 @@ function groupByDay(assets: Asset[]): DayGroup[] {
     current.assets.push(a)
   }
   return groups
+}
+
+/** The capture time to display: wall clock when known, else the UTC instant. */
+function captureTime(a: Asset): number | undefined {
+  return a.localDateTime ?? a.dateTime
 }
 
 function toDateKey(d: Date): string {
@@ -350,8 +353,8 @@ function Lightbox({
       <div className="flex items-center justify-between px-4 py-3 text-sm text-neutral-300">
         <span>
           {[
-            asset.localDateTime
-              ? dayFormat.format(new Date(asset.localDateTime * 1000))
+            captureTime(asset)
+              ? dayFormat.format(new Date(captureTime(asset)! * 1000))
               : undefined,
             asset.city,
             asset.country,
@@ -368,7 +371,12 @@ function Lightbox({
           <XIcon />
         </Button>
       </div>
-      <div className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4">
+      <div
+        className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose()
+        }}
+      >
         {onPrev && (
           <Button
             variant="ghost"

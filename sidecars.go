@@ -50,7 +50,8 @@ var (
 )
 
 // googleSidecarInfo holds the capture time (UTC seconds) and coordinates a
-// Google Takeout sidecar records for a media file.
+// Google Takeout sidecar records for a media file. Takeout only knows the
+// UTC instant; the camera's wall clock is not recorded.
 type googleSidecarInfo struct {
 	TakenAt   int64
 	Latitude  float64
@@ -64,8 +65,10 @@ func applyGoogleSidecar(absolutePath string, asset *Asset) {
 		return
 	}
 
-	if asset.LocalDateTime == 0 && info.TakenAt != 0 {
-		asset.LocalDateTime = info.TakenAt
+	// The sidecar time is authoritative: re-encoded media in the export
+	// can carry a processing date in its EXIF instead of the capture date.
+	if info.TakenAt != 0 {
+		asset.DateTime = info.TakenAt
 	}
 	// Takeout often records geoData as all zeros and keeps the real EXIF
 	// coordinates in geoDataExif; (0,0) is treated as "no location".
@@ -168,10 +171,18 @@ func applyImmichSidecar(absolutePath string, asset *Asset) {
 		}
 
 		if taken, err := time.Parse(time.RFC3339, sidecar.DateTaken); err == nil {
+			// RFC3339 carries the offset, so both the wall clock and the
+			// true instant are derivable. The sidecar time is
+			// authoritative: re-encoded media in the export can carry a
+			// processing date in its EXIF instead of the capture date.
 			asset.LocalDateTime = time.Date(
 				taken.Year(), taken.Month(), taken.Day(),
 				taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
 			).Unix()
+			asset.DateTime = taken.Unix()
+			if _, offset := taken.Zone(); offset != 0 && asset.TimeZone == "" {
+				asset.TimeZone = taken.Format("-07:00")
+			}
 		}
 
 		if sidecar.Latitude != 0 || sidecar.Longitude != 0 {
@@ -183,7 +194,14 @@ func applyImmichSidecar(absolutePath string, asset *Asset) {
 
 var snapchatDateRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})_`)
 
+// Snapchat memory files start with the capture date, without a time or
+// zone; only the wall-clock day is known. It is only used as a fallback,
+// since snapchat re-encodes media with the capture time in its QuickTime
+// CreateDate.
 func applySnapchatSidecar(absolutePath string, asset *Asset) {
+	if asset.LocalDateTime != 0 || asset.DateTime != 0 {
+		return
+	}
 	m := snapchatDateRe.FindStringSubmatch(filepath.Base(absolutePath))
 	if m == nil {
 		return
@@ -205,13 +223,14 @@ var iCloudWeekdays = map[string]bool{
 
 var (
 	iCloudCSVCacheMu sync.Mutex
-	// dir -> normalized imgName -> capture time as wall-clock UTC seconds
-	// (0 when the row's date could not be parsed).
-	iCloudCSVCache = map[string]map[string]int64{}
+	// dir -> normalized imgName -> capture time with its zone (zero when
+	// the row's date could not be parsed). Exports use GMT, i.e. the
+	// parsed value is the UTC instant.
+	iCloudCSVCache = map[string]map[string]time.Time{}
 )
 
 func applyICloudSidecar(absolutePath string, asset *Asset) {
-	if asset.LocalDateTime != 0 {
+	if asset.DateTime != 0 {
 		return
 	}
 
@@ -221,22 +240,33 @@ func applyICloudSidecar(absolutePath string, asset *Asset) {
 		return
 	}
 
-	asset.LocalDateTime = taken
+	asset.DateTime = taken.Unix()
+	if _, offset := taken.Zone(); offset != 0 {
+		if asset.LocalDateTime == 0 {
+			asset.LocalDateTime = time.Date(
+				taken.Year(), taken.Month(), taken.Day(),
+				taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
+			).Unix()
+		}
+		if asset.TimeZone == "" {
+			asset.TimeZone = taken.Format("-07:00")
+		}
+	}
 }
 
-func iCloudTakenAt(dir, fileName string) (int64, bool) {
+func iCloudTakenAt(dir, fileName string) (time.Time, bool) {
 	index := iCloudCSVIndex(dir)
 
 	if taken, ok := index[strings.ToLower(fileName)]; ok {
-		return taken, taken != 0
+		return taken, !taken.IsZero()
 	}
 	if taken, ok := index[normalizeICloudName(fileName)]; ok {
-		return taken, taken != 0
+		return taken, !taken.IsZero()
 	}
-	return 0, false
+	return time.Time{}, false
 }
 
-func iCloudCSVIndex(dir string) map[string]int64 {
+func iCloudCSVIndex(dir string) map[string]time.Time {
 	iCloudCSVCacheMu.Lock()
 	defer iCloudCSVCacheMu.Unlock()
 
@@ -244,7 +274,7 @@ func iCloudCSVIndex(dir string) map[string]int64 {
 		return index
 	}
 
-	index := map[string]int64{}
+	index := map[string]time.Time{}
 	matches, _ := filepath.Glob(filepath.Join(dir, "Photo Details*.csv"))
 	for _, path := range matches {
 		indexICloudCSV(path, index)
@@ -254,7 +284,7 @@ func iCloudCSVIndex(dir string) map[string]int64 {
 	return index
 }
 
-func indexICloudCSV(path string, index map[string]int64) {
+func indexICloudCSV(path string, index map[string]time.Time) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -300,20 +330,16 @@ func indexICloudCSV(path string, index map[string]int64) {
 	}
 }
 
-func parseICloudCSVDate(s string) (int64, bool) {
+func parseICloudCSVDate(s string) (time.Time, bool) {
 	if fields := strings.SplitN(s, " ", 2); len(fields) == 2 && iCloudWeekdays[fields[0]] {
 		s = fields[1]
 	}
 
 	taken, err := time.Parse(iCloudCSVDateLayout, s)
 	if err != nil {
-		return 0, false
+		return time.Time{}, false
 	}
-
-	return time.Date(
-		taken.Year(), taken.Month(), taken.Day(),
-		taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
-	).Unix(), true
+	return taken, true
 }
 
 func normalizeICloudName(name string) string {

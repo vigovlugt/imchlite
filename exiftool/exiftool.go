@@ -99,9 +99,9 @@ func (e *Exiftool) Close() error {
 		fmt.Fprintln(e.stdin, "False")
 
 		done := make(chan struct{})
-	e := &Exiftool{}
+		e := &Exiftool{}
 
-	go func() {
+		go func() {
 			e.cmd.Wait()
 			close(done)
 		}()
@@ -147,6 +147,7 @@ type MediaMetadata struct {
 	Height       int64
 	DurationMs   int64
 	LocalTakenAt int64
+	TakenAtUTC   int64
 	Orientation  int64
 	MimeType     string
 
@@ -217,14 +218,102 @@ func (e *Exiftool) ProbeMetadata(path string) (MediaMetadata, error) {
 		}
 	}
 
-	for _, key := range []string{"DateTimeOriginal", "CreateDate"} {
+	// Capture-time tag priority mirrors the Immich server's firstDateTime
+	// list. EXIF date tags hold a wall clock without zone info; QuickTime
+	// tags hold a UTC instant. QuickTime CreationDate is the exception:
+	// Apple writes it with an explicit UTC offset.
+	isVideo := false
+	if _, err := fieldFloat(fields, "Duration"); err == nil {
+		isVideo = true
+	}
+	if _, ok := fields["TrackCreateDate"]; ok {
+		isVideo = true
+	}
+
+	// Wall-clock candidates for both kinds. CreateDate and its composites
+	// are only wall clocks for still images: for videos CreateDate is
+	// QuickTime and means a UTC instant.
+	var wallTime time.Time
+	wallKeys := []string{"SubSecDateTimeOriginal", "DateTimeOriginal"}
+	if !isVideo {
+		wallKeys = append(wallKeys, "SubSecCreateDate", "CreateDate", "MediaCreateDate", "DateTimeCreated", "DateCreated")
+	}
+	for _, key := range wallKeys {
 		if value, ok := fieldString(fields, key); ok {
 			if taken, ok := parseExifDate(value); ok {
-				m.LocalTakenAt = time.Date(
-					taken.Year(), taken.Month(), taken.Day(),
-					taken.Hour(), taken.Minute(), taken.Second(), 0, time.UTC,
-				).Unix()
+				wallTime = taken
 				break
+			}
+		}
+	}
+
+	// Apple's QuickTime CreationDate carries the wall clock together with
+	// its UTC offset, so it fills both columns and pins the zone.
+	creationZoned := false
+	if wallTime.IsZero() {
+		if value, ok := fieldString(fields, "CreationDate"); ok {
+			if taken, zonedOffset, ok := parseZonedDate(value); ok {
+				m.LocalTakenAt = taken.Unix()
+				m.TakenAtUTC = taken.Add(-zonedOffset).Unix()
+				if m.TimeZone == "" {
+					m.TimeZone = formatZoneOffset(zonedOffset)
+				}
+				creationZoned = true
+			}
+		}
+	}
+
+	// Camera-assigned UTC offset (photos with GPS-capable clocks).
+	var offset time.Duration
+	hasOffset := false
+	for _, key := range []string{"OffsetTimeOriginal", "OffsetTimeDigitized", "OffsetTime"} {
+		if value, ok := fieldString(fields, key); ok {
+			if d, err := parseZoneOffset(value); err == nil {
+				offset = d
+				hasOffset = true
+				break
+			}
+		}
+	}
+	if hasOffset {
+		m.TimeZone = formatZoneOffset(offset)
+	}
+
+	switch {
+	case !wallTime.IsZero():
+		// The wall clock is known; the offset yields the true instant.
+		m.LocalTakenAt = wallTime.Unix()
+		if hasOffset {
+			m.TakenAtUTC = wallTime.Add(-offset).Unix()
+		}
+	case creationZoned:
+		// Both columns were set from CreationDate's offset.
+	case isVideo:
+		// QuickTime CreateDate and its composites hold a UTC instant
+		// (exiftool already decoded them above). Some older devices
+		// write local time in violation of the spec.
+		for _, key := range []string{"SubSecCreateDate", "CreateDate", "MediaCreateDate", "DateTimeUTC", "SonyDateTime2"} {
+			if value, ok := fieldString(fields, key); ok {
+				if taken, ok := parseExifDate(value); ok {
+					m.TakenAtUTC = taken.Unix()
+					break
+				}
+			}
+		}
+	}
+
+	// GPS timestamps are always UTC, but only trusted when the camera's
+	// own clock data is missing: re-saved files can carry a GPS track
+	// stamped with the re-save date. DateTimeUTC and SonyDateTime2 are
+	// also plain UTC instants, kept after GPSDateTime to match the Immich
+	// server's priority.
+	if m.TakenAtUTC == 0 && m.LocalTakenAt == 0 {
+		for _, key := range []string{"GPSDateTime", "DateTimeUTC", "SonyDateTime2"} {
+			if value, ok := fieldString(fields, key); ok {
+				if taken, ok := parseGPSDate(value); ok {
+					m.TakenAtUTC = taken.Unix()
+					break
+				}
 			}
 		}
 	}
@@ -350,6 +439,74 @@ func getIntField(fields map[string]any, keys ...string) int64 {
 }
 
 func parseExifDate(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	// SubSec composites append fractional seconds; only whole seconds
+	// are kept.
+	if len(value) > 19 && (value[19] == '.' || value[19] == ',') {
+		value = value[:19]
+	}
+	t, err := time.ParseInLocation("2006:01:02 15:04:05", value, time.UTC)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// parseZonedDate parses a date/time with an explicit UTC offset, as written
+// by Apple's QuickTime CreationDate, e.g. "2023-10-06T08:39:09+0200" or
+// "2023:10:06 08:39:09+02:00".
+func parseZonedDate(value string) (time.Time, time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	layouts := []string{
+		"2006-01-02T15:04:05.999999999Z07:00",
+		"2006-01-02T15:04:05.999999999-0700",
+		"2006:01:02 15:04:05Z07:00",
+		"2006:01:02 15:04:05-07:00",
+		"2006:01:02 15:04:05-0700",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, value); err == nil {
+			_, offset := t.Zone()
+			return t, time.Duration(offset) * time.Second, true
+		}
+	}
+	return time.Time{}, 0, false
+}
+
+// parseZoneOffset parses an EXIF offset tag such as "+02:00".
+func parseZoneOffset(value string) (time.Duration, error) {
+	s := strings.TrimSpace(value)
+	if len(s) != 6 || (s[0] != '+' && s[0] != '-') || s[3] != ':' {
+		return 0, fmt.Errorf("invalid offset %q", value)
+	}
+	hours, err := strconv.Atoi(s[1:3])
+	if err != nil {
+		return 0, fmt.Errorf("invalid offset %q: %w", value, err)
+	}
+	minutes, err := strconv.Atoi(s[4:6])
+	if err != nil {
+		return 0, fmt.Errorf("invalid offset %q: %w", value, err)
+	}
+	d := time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute
+	if s[0] == '-' {
+		d = -d
+	}
+	return d, nil
+}
+
+// formatZoneOffset renders a duration as an EXIF-style offset such as "+02:00".
+func formatZoneOffset(d time.Duration) string {
+	sign := "+"
+	if d < 0 {
+		sign = "-"
+		d = -d
+	}
+	return fmt.Sprintf("%s%02d:%02d", sign, int(d.Hours()), int(d.Minutes())%60)
+}
+
+// parseGPSDate parses a GPS date/time value such as "2022:11:11 19:23:54Z".
+func parseGPSDate(value string) (time.Time, bool) {
+	value = strings.TrimSuffix(strings.TrimSpace(value), "Z")
 	t, err := time.ParseInLocation("2006:01:02 15:04:05", value, time.UTC)
 	if err != nil {
 		return time.Time{}, false

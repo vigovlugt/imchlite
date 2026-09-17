@@ -31,8 +31,11 @@ func migration001(tx *sql.Tx) error {
 		    -- timestamps (unix epoch seconds)
 		    file_created_at integer,
 		    file_modified_at integer not null,
-		    -- wall-clock capture time from EXIF, pinned to UTC (no zone info)
-		    local_date_time integer,
+		    -- wall-clock capture time pinned to UTC (no zone info); null when
+		    -- only a UTC instant is known
+		    date_time_local integer,
+		    -- true capture instant in UTC
+		    date_time integer,
 
 		    time_zone text,
 		    latitude real,
@@ -53,7 +56,7 @@ func migration001(tx *sql.Tx) error {
 		    created_at integer not null default (unixepoch()),
 		    updated_at integer not null default (unixepoch())
 		)`,
-		`create index if not exists assets_local_date_time_idx on assets (local_date_time)`,
+		`create index if not exists assets_capture_time_idx on assets (coalesce(date_time_local, date_time))`,
 		`create table if not exists files (
 		    id integer primary key autoincrement,
 

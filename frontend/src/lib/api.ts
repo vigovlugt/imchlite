@@ -3,7 +3,10 @@ export interface Asset {
   checksum: string
   mimeType?: string
   type: 'image' | 'video'
+  /** wall-clock capture time pinned to UTC */
   localDateTime?: number
+  /** true capture instant in UTC */
+  dateTime?: number
   timeZone?: string
   latitude?: number
   longitude?: number

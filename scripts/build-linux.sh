@@ -1,8 +1,10 @@
 set -Eeuo pipefail
 
-cd frontend
-bun run build
-cd ..
+(
+  cd frontend
+  bun install --frozen-lockfile
+  bun run build
+)
 
 go build .
 

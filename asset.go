@@ -13,8 +13,11 @@ type Asset struct {
 	// timestamps (unix epoch seconds)
 	FileCreatedAt  int64
 	FileModifiedAt int64
-	// wall-clock capture time from EXIF, pinned to UTC (no zone info)
+	// wall-clock capture time pinned to UTC (no zone info); 0 when only a
+	// UTC instant is known
 	LocalDateTime int64
+	// true capture instant in UTC; 0 when unknown
+	DateTime int64
 
 	// capture location and zone; empty/zero when unknown
 	TimeZone  string
@@ -37,4 +40,13 @@ type Asset struct {
 
 	CreatedAt int64
 	UpdatedAt int64
+}
+
+// CaptureTime is the time the frontend sorts and groups on: the wall-clock
+// time when known, otherwise the UTC instant.
+func (a Asset) CaptureTime() int64 {
+	if a.LocalDateTime != 0 {
+		return a.LocalDateTime
+	}
+	return a.DateTime
 }

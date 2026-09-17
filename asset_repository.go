@@ -49,12 +49,15 @@ func (r *assetRepository) getByChecksum(ctx context.Context, checksum []byte) (*
 // insert adds a new asset row. If an asset with the same checksum already
 // exists (a concurrent worker won the race) the insert is a no-op.
 func (r *assetRepository) insert(ctx context.Context, a *Asset) error {
-	var mimeType, localDateTime, timeZone, city, country any
+	var mimeType, dateTimeLocal, dateTime, timeZone, city, country any
 	if a.MimeType != "" {
 		mimeType = a.MimeType
 	}
 	if a.LocalDateTime != 0 {
-		localDateTime = a.LocalDateTime
+		dateTimeLocal = a.LocalDateTime
+	}
+	if a.DateTime != 0 {
+		dateTime = a.DateTime
 	}
 	if a.TimeZone != "" {
 		timeZone = a.TimeZone
@@ -71,23 +74,23 @@ func (r *assetRepository) insert(ctx context.Context, a *Asset) error {
 	}
 	if _, err := r.db.ExecContext(ctx,
 		`insert into assets (checksum, mime_type, type, file_created_at, file_modified_at,
-		    local_date_time, time_zone, latitude, longitude, city, country,
+		    date_time_local, date_time, time_zone, latitude, longitude, city, country,
 		    width, height, duration_ms, orientation)
-		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 on conflict (checksum) do nothing`,
 		a.Checksum, mimeType, a.Type, a.FileCreatedAt, a.FileModifiedAt,
-		localDateTime, timeZone, latitude, longitude, city, country,
+		dateTimeLocal, dateTime, timeZone, latitude, longitude, city, country,
 		a.Width, a.Height, a.DurationMs, a.Orientation); err != nil {
 		return fmt.Errorf("insert asset: %w", err)
 	}
 	return nil
 }
 
-// assetCursor is the keyset pagination position: the local_date_time and id
-// of the last asset of the previous page.
+// assetCursor is the keyset pagination position: the capture time and id of
+// the last asset of the previous page.
 type assetCursor struct {
-	LocalDateTime int64
-	ID            int64
+	Time int64
+	ID   int64
 }
 
 // assetQuery holds the optional filters for listing assets. Nil/empty fields
@@ -102,7 +105,7 @@ type assetQuery struct {
 	Type         *AssetType
 	City         *string
 	Country      *string
-	// From/Until bound local_date_time (unix epoch seconds), inclusive.
+	// From/Until bound the capture time (unix epoch seconds), inclusive.
 	From  *int64
 	Until *int64
 	// Cursor is the keyset pagination position.
@@ -142,8 +145,8 @@ func (r *assetRepository) getFacets(ctx context.Context) (facets, error) {
 
 	if err := r.db.QueryRowContext(ctx,
 		`select count(*),
-		        min(local_date_time),
-		        max(local_date_time)
+		        min(coalesce(date_time_local, date_time)),
+		        max(coalesce(date_time_local, date_time))
 		 from assets
 		 where deleted_at is null`,
 	).Scan(&f.TotalCount, &f.MinTime, &f.MaxTime); err != nil {
@@ -212,7 +215,8 @@ func (r *assetRepository) liveFileForChecksum(ctx context.Context, checksum []by
 }
 
 // query returns the assets matching the filters, newest capture time first,
-// with stable keyset pagination on (local_date_time, id).
+// with stable keyset pagination on (capture time, id). The capture time is
+// the wall-clock local date when known, otherwise the UTC instant.
 func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, error) {
 	limit := q.Limit
 	if limit <= 0 {
@@ -237,11 +241,11 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 		args = append(args, *q.Country)
 	}
 	if q.From != nil {
-		conds = append(conds, "a.local_date_time >= ?")
+		conds = append(conds, "coalesce(a.date_time_local, a.date_time) >= ?")
 		args = append(args, *q.From)
 	}
 	if q.Until != nil {
-		conds = append(conds, "a.local_date_time <= ?")
+		conds = append(conds, "coalesce(a.date_time_local, a.date_time) <= ?")
 		args = append(args, *q.Until)
 	}
 	for _, p := range q.IncludePaths {
@@ -255,14 +259,15 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 		args = append(args, likePattern(p))
 	}
 	if q.Cursor != nil {
-		conds = append(conds, "(a.local_date_time < ? or (a.local_date_time = ? and a.id < ?))")
-		args = append(args, q.Cursor.LocalDateTime, q.Cursor.LocalDateTime, q.Cursor.ID)
+		conds = append(conds, "(coalesce(a.date_time_local, a.date_time) < ? or (coalesce(a.date_time_local, a.date_time) = ? and a.id < ?))")
+		args = append(args, q.Cursor.Time, q.Cursor.Time, q.Cursor.ID)
 	}
 
 	var sb strings.Builder
-	sb.WriteString(`select a.id, a.checksum, a.mime_type, a.type, a.local_date_time,
-		    a.time_zone, a.latitude, a.longitude, a.city, a.country,
-		    a.width, a.height, a.duration_ms, a.orientation, a.is_favorite
+	sb.WriteString(`select a.id, a.checksum, a.mime_type, a.type,
+		    a.date_time_local, a.date_time, a.time_zone, a.latitude, a.longitude,
+		    a.city, a.country, a.width, a.height, a.duration_ms, a.orientation,
+		    a.is_favorite
 		from assets a
 		where `)
 	for i, cond := range conds {
@@ -274,7 +279,7 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 		sb.WriteString(")")
 	}
 	sb.WriteString(`
-		order by a.local_date_time desc, a.id desc
+		order by coalesce(a.date_time_local, a.date_time) desc, a.id desc
 		limit ?`)
 	args = append(args, limit)
 
@@ -287,22 +292,24 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 	assets := []Asset{}
 	for rows.Next() {
 		var (
-			a                                     Asset
-			mimeType                              sql.NullString
-			localDateTime                         sql.NullInt64
-			timeZone, city, country               sql.NullString
-			latitude, longitude                   sql.NullFloat64
+			a                                      Asset
+			mimeType                               sql.NullString
+			dateTimeLocal, dateTime                sql.NullInt64
+			timeZone, city, country                sql.NullString
+			latitude, longitude                    sql.NullFloat64
 			width, height, durationMs, orientation sql.NullInt64
 		)
 		if err := rows.Scan(
-			&a.ID, &a.Checksum, &mimeType, &a.Type, &localDateTime,
+			&a.ID, &a.Checksum, &mimeType, &a.Type,
+			&dateTimeLocal, &dateTime,
 			&timeZone, &latitude, &longitude, &city, &country,
 			&width, &height, &durationMs, &orientation, &a.IsFavorite,
 		); err != nil {
 			return nil, fmt.Errorf("scan asset: %w", err)
 		}
 		a.MimeType = mimeType.String
-		a.LocalDateTime = localDateTime.Int64
+		a.LocalDateTime = dateTimeLocal.Int64
+		a.DateTime = dateTime.Int64
 		a.TimeZone = timeZone.String
 		a.Latitude = latitude.Float64
 		a.Longitude = longitude.Float64

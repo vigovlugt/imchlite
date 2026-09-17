@@ -14,21 +14,24 @@ import (
 
 // assetResponse is the wire format of an asset for the api.
 type assetResponse struct {
-	ID            int64    `json:"id"`
-	Checksum      string   `json:"checksum"`
-	MimeType      string   `json:"mimeType,omitempty"`
-	Type          string   `json:"type"`
-	LocalDateTime *int64   `json:"localDateTime"`
-	TimeZone      string   `json:"timeZone,omitempty"`
-	Latitude      *float64 `json:"latitude,omitempty"`
-	Longitude     *float64 `json:"longitude,omitempty"`
-	City          string   `json:"city,omitempty"`
-	Country       string   `json:"country,omitempty"`
-	Width         *int64   `json:"width,omitempty"`
-	Height        *int64   `json:"height,omitempty"`
-	DurationMs    *int64   `json:"durationMs,omitempty"`
-	Orientation   *int64   `json:"orientation,omitempty"`
-	IsFavorite    bool     `json:"isFavorite"`
+	ID       int64  `json:"id"`
+	Checksum string `json:"checksum"`
+	MimeType string `json:"mimeType,omitempty"`
+	Type     string `json:"type"`
+	// wall-clock capture time pinned to UTC
+	LocalDateTime *int64 `json:"localDateTime,omitempty"`
+	// true capture instant in UTC
+	DateTime    *int64   `json:"dateTime,omitempty"`
+	TimeZone    string   `json:"timeZone,omitempty"`
+	Latitude    *float64 `json:"latitude,omitempty"`
+	Longitude   *float64 `json:"longitude,omitempty"`
+	City        string   `json:"city,omitempty"`
+	Country     string   `json:"country,omitempty"`
+	Width       *int64   `json:"width,omitempty"`
+	Height      *int64   `json:"height,omitempty"`
+	DurationMs  *int64   `json:"durationMs,omitempty"`
+	Orientation *int64   `json:"orientation,omitempty"`
+	IsFavorite  bool     `json:"isFavorite"`
 }
 
 // assetPage is a page of assets plus the cursor to fetch the next one.
@@ -56,6 +59,10 @@ func newAssetResponse(a Asset) assetResponse {
 	if a.LocalDateTime != 0 {
 		localDateTime := a.LocalDateTime
 		r.LocalDateTime = &localDateTime
+	}
+	if a.DateTime != 0 {
+		dateTime := a.DateTime
+		r.DateTime = &dateTime
 	}
 	if a.TimeZone != "" {
 		r.TimeZone = a.TimeZone
@@ -91,7 +98,7 @@ func newAssetResponse(a Asset) assetResponse {
 
 // encodeCursor encodes a pagination cursor for use in a url.
 func encodeCursor(c assetCursor) string {
-	raw := fmt.Sprintf("%d:%d", c.LocalDateTime, c.ID)
+	raw := fmt.Sprintf("%d:%d", c.Time, c.ID)
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -102,7 +109,7 @@ func decodeCursor(s string) (assetCursor, error) {
 		return assetCursor{}, fmt.Errorf("decode cursor: %w", err)
 	}
 	var c assetCursor
-	if _, err := fmt.Sscanf(string(raw), "%d:%d", &c.LocalDateTime, &c.ID); err != nil {
+	if _, err := fmt.Sscanf(string(raw), "%d:%d", &c.Time, &c.ID); err != nil {
 		return assetCursor{}, fmt.Errorf("parse cursor: %w", err)
 	}
 	return c, nil
@@ -266,7 +273,7 @@ func registerAssetRoutes(mux *http.ServeMux, assets *assetRepository, libraryLoc
 		// the last asset.
 		if len(found) == limit {
 			last := found[len(found)-1]
-			page.NextCursor = encodeCursor(assetCursor{LocalDateTime: last.LocalDateTime, ID: last.ID})
+			page.NextCursor = encodeCursor(assetCursor{Time: last.CaptureTime(), ID: last.ID})
 		}
 
 		writeJSON(w, http.StatusOK, page)

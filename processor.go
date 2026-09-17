@@ -144,6 +144,7 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 		FileCreatedAt:  mtime,
 		FileModifiedAt: mtime,
 		LocalDateTime:  meta.LocalTakenAt,
+		DateTime:       meta.TakenAtUTC,
 		TimeZone:       meta.TimeZone,
 		Latitude:       meta.Latitude,
 		Longitude:      meta.Longitude,
