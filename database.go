@@ -37,7 +37,7 @@ func openDatabase(libraryLocation string) (*sql.DB, error) {
 		// Using 'Path' guarantees automatic URL escaping for characters 
 		// like '#' or '?' so they aren't misread by SQLite.
 		Path:     uriPath, 
-		RawQuery: "_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on",
+		RawQuery: "_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&_synchronous=NORMAL",
 	}).String()
 
 	db, err := sql.Open("sqlite3", dsn)

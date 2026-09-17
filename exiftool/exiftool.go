@@ -94,13 +94,14 @@ func New(dir string) (*Exiftool, error) {
 }
 
 func (e *Exiftool) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	if e.cmd != nil && e.cmd.Process != nil {
 		fmt.Fprintln(e.stdin, "-stay_open")
 		fmt.Fprintln(e.stdin, "False")
 
 		done := make(chan struct{})
-		e := &Exiftool{}
-
 		go func() {
 			e.cmd.Wait()
 			close(done)

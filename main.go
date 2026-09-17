@@ -19,6 +19,7 @@ import (
 func main() {
 	libraryLocation := flag.String("library-location", "", "path to the imchlite library")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
+	workers := flag.Int("workers", 4, "number of parallel asset processors")
 	flag.Parse()
 
 	if *libraryLocation == "" {
@@ -62,7 +63,7 @@ func main() {
 	state := newIndexerState()
 
 	var wg sync.WaitGroup
-	for range 4 {
+	for range *workers {
 		et, err := exiftoolbin.New(exiftoolDir)
 		if err != nil {
 			log.Fatalf("start exiftool: %v", err)
@@ -74,25 +75,29 @@ func main() {
 		})
 	}
 
-	// var closeQueue sync.Once
-	// closeQueueFn := func() { closeQueue.Do(func() { queue.Close() }) }
+	var closeQueue sync.Once
+	closeQueueFn := func() { closeQueue.Do(func() { queue.Close() }) }
 
-	go func() {
+	var indexWG sync.WaitGroup
+	indexWG.Go(func() {
 		log.Printf("indexing library %s", *libraryLocation)
 		if err := indexLibrary(ctx, *libraryLocation, fileRepo, assetRepo, queue, state); err != nil {
 			log.Printf("indexing failed: %v", err)
 		} else {
 			log.Printf("indexing completed")
 		}
-		// closeQueueFn()
-	}()
+		closeQueueFn()
+	})
 
 	srv := newServer(*addr, state, assetRepo, *libraryLocation)
 	if err := runServer(ctx, srv); err != nil {
-		log.Fatalf("serve: %v", err)
+		log.Printf("serve: %v", err)
+		return
 	}
 
-	// Server stopped (signal received): cancel indexing and drain the queue.
-	// closeQueueFn()
-	// wg.Wait()
+	// Server stopped (signal received): the indexer stops walking on the
+	// canceled context and closes the queue; workers drain it and exit.
+	// Only then are the exiftool processes closed by the deferred Close.
+	indexWG.Wait()
+	wg.Wait()
 }

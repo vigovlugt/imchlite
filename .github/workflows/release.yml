@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build (linux)
+        if: runner.os == 'Linux'
+        run: ./scripts/build-linux.sh
+
+      - name: Setup MSYS2 (windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: false
+          install: mingw-w64-x86_64-gcc
+
+      - name: Add mingw gcc to PATH (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH "C:\msys64\mingw64\bin"
+
+      - name: Build (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Package (linux)
+        if: runner.os == 'Linux'
+        run: |
+          tar -czf imchlite-linux-amd64.tar.gz imchlite
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path imchlite.exe -DestinationPath imchlite-windows-amd64.zip
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            imchlite-linux-amd64.tar.gz
+            imchlite-windows-amd64.zip

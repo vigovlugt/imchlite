@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -28,7 +29,18 @@ func newAssetQueue() *chann.Chann[assetTask] {
 const (
 	thumbnailSize    = 256
 	thumbnailQuality = 80
+	// maxInMemoryImageSize bounds how large a pipeable image may be before
+	// it is streamed from disk instead of buffered in memory.
+	maxInMemoryImageSize = 256 << 20
+	copyBufferSize       = 1 << 20
 )
+
+// pipeableImageExtensions are image formats ffmpeg can demux from a
+// non-seekable stdin stream, allowing thumbnail generation from the bytes
+// already read for checksumming.
+var pipeableImageExtensions = map[string]struct{}{
+	".jpeg": {}, ".jpg": {}, ".jpe": {}, ".png": {}, ".webp": {}, ".bmp": {}, ".gif": {},
+}
 
 // processor holds the shared dependencies of the asset workers.
 type processor struct {
@@ -55,6 +67,11 @@ func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg
 // runs its own exiftool process.
 func (p *processor) worker(et *exiftoolbin.Exiftool, queue *chann.Chann[assetTask], state *indexerState) {
 	for task := range queue.Out() {
+		if p.ctx.Err() != nil {
+			// Shutting down: drain the queue without touching disk.
+			state.errored.Add(1)
+			continue
+		}
 		if err := p.process(task, et); err != nil {
 			log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
 			state.errored.Add(1)
@@ -67,10 +84,12 @@ func (p *processor) worker(et *exiftoolbin.Exiftool, queue *chann.Chann[assetTas
 // processTimings holds the wall-clock duration in milliseconds of each
 // pipeline stage for a single processed asset.
 type processTimings struct {
+	readMs     int64
 	checksumMs int64
 	metadataMs int64
 	thumbMs    int64
 	geoMs      int64
+	dbMs       int64
 }
 
 // process checksums a file, stores (or reuses) its asset, and links the file
@@ -88,33 +107,57 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 
 	var timings processTimings
 
+	// Images readable as a stream are read from disk exactly once: the same
+	// bytes feed both the checksum and the thumbnail generation, halving
+	// disk I/O for the common case.
+	var data []byte
+	if ext, ok := lowerExtension(task.Path); ok {
+		if _, pipeable := pipeableImageExtensions[ext]; pipeable && info.Size() <= maxInMemoryImageSize {
+			readStart := time.Now()
+			if data, err = os.ReadFile(absolutePath); err != nil {
+				return fmt.Errorf("read %s: %w", absolutePath, err)
+			}
+			timings.readMs = time.Since(readStart).Milliseconds()
+		}
+	}
+
 	checksumStart := time.Now()
-	checksum, err := fileChecksum(absolutePath)
+	var checksum []byte
+	if data != nil {
+		sum := sha256.Sum256(data)
+		checksum = sum[:]
+	} else {
+		checksum, err = fileChecksum(absolutePath)
+	}
 	timings.checksumMs = time.Since(checksumStart).Milliseconds()
 	if err != nil {
 		return fmt.Errorf("checksum %s: %w", absolutePath, err)
 	}
 
+	dbStart := time.Now()
 	asset, err := p.assets.getByChecksum(p.ctx, checksum)
+	timings.dbMs += time.Since(dbStart).Milliseconds()
 	if err != nil {
 		return fmt.Errorf("lookup asset by checksum: %w", err)
 	}
 
 	if asset == nil {
-		if asset, timings, err = p.createAsset(task, et, absolutePath, checksum, info, timings); err != nil {
+		if asset, timings, err = p.createAsset(task, et, absolutePath, checksum, info, data, timings); err != nil {
 			return err
 		}
 	}
 
+	dbStart = time.Now()
 	if err := p.files.linkAsset(p.ctx, task.FileID, asset.ID); err != nil {
 		return fmt.Errorf("link file %d to asset %d: %w", task.FileID, asset.ID, err)
 	}
+	timings.dbMs += time.Since(dbStart).Milliseconds()
 
 	log.Printf(
-		"processed file=%d path=%s asset=%d total_ms=%d checksum_ms=%d metadata_ms=%d thumbnail_ms=%d geo_ms=%d",
+		"processed file=%d path=%s asset=%d total_ms=%d read_ms=%d checksum_ms=%d metadata_ms=%d thumbnail_ms=%d geo_ms=%d db_ms=%d",
 		task.FileID, task.Path, asset.ID,
 		time.Since(started).Milliseconds(),
-		timings.checksumMs, timings.metadataMs, timings.thumbMs, timings.geoMs,
+		timings.readMs, timings.checksumMs, timings.metadataMs, timings.thumbMs, timings.geoMs, timings.dbMs,
 	)
 	return nil
 }
@@ -123,7 +166,7 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 // its asset row. A concurrent worker may have stored the same content first;
 // the asset is re-fetched by checksum so the row with the canonical id is
 // returned.
-func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, timings processTimings) (*Asset, processTimings, error) {
+func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, data []byte, timings processTimings) (*Asset, processTimings, error) {
 	metadataStart := time.Now()
 	meta, err := et.ProbeMetadata(absolutePath)
 	timings.metadataMs = time.Since(metadataStart).Milliseconds()
@@ -166,24 +209,27 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 	timings.geoMs = time.Since(geoStart).Milliseconds()
 
 	thumbStart := time.Now()
-	if err := p.createThumbnail(checksum, absolutePath); err != nil {
+	if err := p.createThumbnail(checksum, absolutePath, data); err != nil {
 		log.Printf("thumbnail for %s: %v", task.Path, err)
 	}
 	timings.thumbMs = time.Since(thumbStart).Milliseconds()
 
+	insertStart := time.Now()
 	if err := p.assets.insert(p.ctx, asset); err != nil {
 		return nil, timings, fmt.Errorf("store asset for %s: %w", task.Path, err)
 	}
 
 	stored, err := p.assets.getByChecksum(p.ctx, checksum)
 	if err != nil {
+		timings.dbMs += time.Since(insertStart).Milliseconds()
 		return nil, timings, fmt.Errorf("lookup asset by checksum: %w", err)
 	}
+	timings.dbMs += time.Since(insertStart).Milliseconds()
 
 	return stored, timings, nil
 }
 
-func (p *processor) createThumbnail(checksum []byte, absolutePath string) error {
+func (p *processor) createThumbnail(checksum []byte, absolutePath string, data []byte) error {
 	dir := filepath.Join(p.libraryLocation, ".imchlite", "thumbnails")
 	hex := fmt.Sprintf("%x", checksum)
 	dest := filepath.Join(dir, hex[0:2], hex[2:4], hex+".webp")
@@ -192,11 +238,11 @@ func (p *processor) createThumbnail(checksum []byte, absolutePath string) error 
 		return fmt.Errorf("create thumbnail dir: %w", err)
 	}
 
-	if err := p.ffmpeg.Thumbnail(p.ctx, absolutePath, dest, thumbnailSize, thumbnailQuality); err != nil {
-		return err
+	if data != nil {
+		return p.ffmpeg.ThumbnailFromReader(p.ctx, bytes.NewReader(data), dest, thumbnailSize, thumbnailQuality)
 	}
 
-	return nil
+	return p.ffmpeg.Thumbnail(p.ctx, absolutePath, dest, thumbnailSize, thumbnailQuality)
 }
 
 // fileChecksum returns the sha256 of a file's bytes.
@@ -208,7 +254,8 @@ func fileChecksum(path string) ([]byte, error) {
 	defer f.Close()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	buf := make([]byte, copyBufferSize)
+	if _, err := io.CopyBuffer(h, f, buf); err != nil {
 		return nil, err
 	}
 	return h.Sum(nil), nil

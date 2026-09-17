@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,4 +65,24 @@ func (f *FFmpeg) Thumbnail(ctx context.Context, source, dest string, size, quali
 		dest,
 	)
 	return err
+}
+
+// ThumbnailFromReader generates a thumbnail from an in-memory stream. The
+// input format must be one ffmpeg can demux without seeking (jpeg, png, ...).
+func (f *FFmpeg) ThumbnailFromReader(ctx context.Context, r io.Reader, dest string, size, quality int) error {
+	cmd := exec.CommandContext(ctx, f.Path,
+		"-y",
+		"-i", "pipe:0",
+		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", size, size),
+		"-frames:v", "1",
+		"-q:v", strconv.Itoa(quality),
+		dest,
+	)
+	cmd.Stdin = r
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg thumbnail from stdin: %w: %s", err, stderr.String())
+	}
+	return nil
 }
