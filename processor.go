@@ -13,6 +13,7 @@ import (
 
 	exiftoolbin "github.com/vigovlugt/imchlite/exiftool"
 	"github.com/vigovlugt/imchlite/ffmpeg"
+	"github.com/vigovlugt/imchlite/queue"
 )
 
 type assetTask struct {
@@ -20,10 +21,8 @@ type assetTask struct {
 	Path   string
 }
 
-const assetQueueSize = 128
-
-func newAssetQueue() chan assetTask {
-	return make(chan assetTask, assetQueueSize)
+func newAssetQueue() *queue.Queue[assetTask] {
+	return queue.New[assetTask]()
 }
 
 const (
@@ -65,8 +64,12 @@ func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg
 
 // worker consumes asset tasks from the queue until it is closed. Each worker
 // runs its own exiftool process.
-func (p *processor) worker(et *exiftoolbin.Exiftool, queue chan assetTask, state *indexerState) {
-	for task := range queue {
+func (p *processor) worker(et *exiftoolbin.Exiftool, queue *queue.Queue[assetTask], state *indexerState) {
+	for {
+		task, ok := queue.Pop()
+		if !ok {
+			break
+		}
 		if p.ctx.Err() != nil {
 			// Shutting down: drain the queue without touching disk.
 			state.errored.Add(1)
@@ -79,6 +82,7 @@ func (p *processor) worker(et *exiftoolbin.Exiftool, queue chan assetTask, state
 		}
 		state.processed.Add(1)
 	}
+	log.Printf("worker finished")
 }
 
 // processTimings holds the wall-clock duration in milliseconds of each

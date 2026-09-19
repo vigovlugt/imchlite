@@ -463,9 +463,7 @@ function IndexerStatsBody({ status }: { status: IndexStatus }) {
         : status.phase === 'failed'
           ? 'Failed'
           : 'Completed'
-  const showEta =
-    status.etaSeconds !== undefined &&
-    (status.phase === 'indexing' || status.phase === 'processing')
+  const showEta = status.etaSeconds !== undefined && status.etaSeconds > 0
 
   return (
     <div className="mt-2 space-y-1.5">
@@ -473,19 +471,23 @@ function IndexerStatsBody({ status }: { status: IndexStatus }) {
         <span className="text-muted-foreground">{state}</span>
         <span className="font-medium tabular-nums">
           {status.processed.toLocaleString()} / {status.discovered.toLocaleString()}
+          {status.phase === 'indexing' ? '+' : ''}
         </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        <div
-          className={`h-full rounded-full transition-[width] duration-500 ${
-            status.failed ? 'bg-destructive' : 'bg-primary'
-          }`}
-          style={{ width: `${percent}%` }}
-        />
+        {status.phase !== 'indexing' && (
+          <div
+            className={`h-full rounded-full transition-[width] duration-500 ${
+              status.failed ? 'bg-destructive' : 'bg-primary'
+            }`}
+            style={{ width: `${percent}%` }}
+          />
+        )}
       </div>
       {showEta && (
         <p className="text-xs tabular-nums text-muted-foreground">
-          ~{formatEta(status.etaSeconds!)} remaining
+          ~{formatEta(status.etaSeconds!)}
+          {status.phase === 'indexing' ? '+' : ''} remaining
         </p>
       )}
       {status.error && (

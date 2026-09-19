@@ -91,7 +91,7 @@ func main() {
 		} else {
 			log.Printf("indexing completed")
 		}
-		close(queue)
+		queue.Close()
 	})
 
 	srv := newServer(*addr, state, assetRepo, *libraryLocation)
