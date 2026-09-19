@@ -22,9 +22,9 @@ type indexerState struct {
 	// they were already processed by a previous run.
 	skipped   atomic.Int64
 	errored   atomic.Int64
-	completed  atomic.Bool
-	failed     atomic.Bool
-	errMsg     atomic.Pointer[string]
+	completed atomic.Bool
+	failed    atomic.Bool
+	errMsg    atomic.Pointer[string]
 }
 
 func newIndexerState() *indexerState {
@@ -138,14 +138,16 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 			return err
 		}
 
+		if d.Name()[0] == '.' {
+			return filepath.SkipDir
+		}
+
 		if d.IsDir() {
-			if d.Name() == ".imchlite" {
+			if d.Name() == "@eaDir" || d.Name() == "#recycle" || d.Name() == "#snapshot" || d.Name() == "System Volume Information" || d.Name() == "$RECYCLE.BIN" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-
-		log.Printf("indexing %s", path)
 
 		if !isMediaPath(path) {
 			return nil
