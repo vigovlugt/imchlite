@@ -58,25 +58,32 @@ func (r *fileRepository) getAll(ctx context.Context) ([]File, error) {
 }
 
 // markOffline flags the given file ids as no longer reachable on disk.
+// Ids are applied in chunks to stay under SQLite's bound-parameter limit.
 func (r *fileRepository) markOffline(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
 
-	var sb strings.Builder
-	sb.WriteString("update files set is_offline = 1, updated_at = unixepoch() where id in (")
-	args := make([]any, 0, len(ids))
-	for i, id := range ids {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		sb.WriteString("?")
-		args = append(args, id)
-	}
-	sb.WriteString(")")
+	const chunkSize = 900
+	for start := 0; start < len(ids); start += chunkSize {
+		end := min(start+chunkSize, len(ids))
+		chunk := ids[start:end]
 
-	if _, err := r.db.ExecContext(ctx, sb.String(), args...); err != nil {
-		return fmt.Errorf("mark %d files offline: %w", len(ids), err)
+		var sb strings.Builder
+		sb.WriteString("update files set is_offline = 1, updated_at = unixepoch() where id in (")
+		args := make([]any, 0, len(chunk))
+		for i, id := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("?")
+			args = append(args, id)
+		}
+		sb.WriteString(")")
+
+		if _, err := r.db.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("mark %d files offline: %w", len(ids), err)
+		}
 	}
 	return nil
 }
