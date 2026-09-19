@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vigovlugt/imchlite/cachedir"
 )
 
 type Exiftool struct {
@@ -28,30 +30,14 @@ type Exiftool struct {
 	mu      sync.Mutex
 }
 
-// Setup extracts the embedded exiftool distribution into a temporary
-// directory and returns its path. The returned dir must be cleaned up with
-// Teardown.
 func Setup() (string, error) {
 	if len(filesRoot) == 0 {
 		return "", fmt.Errorf("no embedded exiftool distribution for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	dir, err := os.MkdirTemp("", "imchlite-exiftool-")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
-	}
-
-	if err := writeTree(files, filesRoot, dir); err != nil {
-		Teardown(dir)
-		return "", err
-	}
-
-	return dir, nil
-}
-
-// Teardown removes the exiftool distribution directory created by Setup.
-func Teardown(dir string) error {
-	return os.RemoveAll(dir)
+	return cachedir.Ensure("exiftool", func(dir string) error {
+		return writeTree(files, filesRoot, dir)
+	})
 }
 
 // New starts an exiftool process using the distribution directory created

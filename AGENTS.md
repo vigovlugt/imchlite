@@ -22,7 +22,7 @@ go build .
 
 ## Embedded binaries
 
-`ffmpeg/` and `exiftool/` embed the actual ffmpeg/exiftool distributions per-platform (`embed_linux_amd64.go`, `embed_windows_amd64.go`; `embed_other.go` embeds nothing, so cross-compiling to other GOOS/GOARCH yields a runtime error). `bin/` dirs are large; extraction to a temp dir happens at app startup. Linux bins run via CGO-free extraction — no system ffmpeg/exiftool needed.
+`ffmpeg/` and `exiftool/` embed the actual ffmpeg/exiftool distributions per-platform (`embed_linux_amd64.go`, `embed_windows_amd64.go`; `embed_other.go` embeds nothing, so cross-compiling to other GOOS/GOARCH yields a runtime error). `bin/` dirs are large; on first run they are extracted atomically (staging dir + rename, see `cachedir/`) to `<user cache dir>/imchlite/ffmpeg/` and `.../exiftool/`, where they persist between runs. Linux bins run via CGO-free extraction — no system ffmpeg/exiftool needed.
 
 ## Layout
 

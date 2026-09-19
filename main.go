@@ -35,11 +35,10 @@ func main() {
 	defer stop()
 
 	start := time.Now()
-	f, err := ffmpeg.Extract()
+	ffmpegDir, err := ffmpeg.Setup()
 	if err != nil {
 		log.Fatalf("extract ffmpeg: %v", err)
 	}
-	defer f.Close()
 	log.Printf("debug: extracted ffmpeg in %s", time.Since(start))
 
 	start = time.Now()
@@ -47,8 +46,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("extract exiftool: %v", err)
 	}
-	defer exiftoolbin.Teardown(exiftoolDir)
 	log.Printf("debug: extracted exiftool in %s", time.Since(start))
+
+	f, err := ffmpeg.New(ffmpegDir)
+	if err != nil {
+		log.Fatalf("start ffmpeg: %v", err)
+	}
 
 	db, err := openDatabase(*libraryLocation)
 	if err != nil {
@@ -103,6 +106,7 @@ func main() {
 	// Server stopped (signal received): the indexer stops walking on the
 	// canceled context and closes the queue; workers drain it and exit.
 	// Only then are the exiftool processes closed by the deferred Close.
+	// The extracted ffmpeg/exiftool cache stays on disk for the next run.
 	indexWG.Wait()
 	wg.Wait()
 }

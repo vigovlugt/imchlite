@@ -10,37 +10,35 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+
+	"github.com/vigovlugt/imchlite/cachedir"
 )
 
 type FFmpeg struct {
-	dir  string
 	Path string
 }
 
-func Extract() (*FFmpeg, error) {
-	dir, err := os.MkdirTemp("", "imchlite-ffmpeg-")
-	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
-	}
-
-	f := &FFmpeg{dir: dir}
+// Setup returns the ffmpeg binary directory from the user cache directory,
+// extracting the embedded copy on first use. The directory persists between
+// runs, so Teardown is a no-op.
+func Setup() (string, error) {
 	if len(ffmpegBytes) == 0 {
-		os.RemoveAll(dir)
-		return nil, fmt.Errorf("no embedded ffmpeg binary for %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("no embedded ffmpeg binary for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	path := filepath.Join(dir, "ffmpeg"+ffmpegFilename)
-	if err := os.WriteFile(path, ffmpegBytes, 0o755); err != nil {
-		os.RemoveAll(dir)
-		return nil, fmt.Errorf("extract ffmpeg: %w", err)
-	}
-	f.Path = path
-
-	return f, nil
+	return cachedir.Ensure("ffmpeg", func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, ffmpegFilename), ffmpegBytes, 0o755)
+	})
 }
 
-func (f *FFmpeg) Close() error {
-	return os.RemoveAll(f.dir)
+// New returns an FFmpeg runner using the binary in the directory created by
+// Setup.
+func New(dir string) (*FFmpeg, error) {
+	path := filepath.Join(dir, ffmpegFilename)
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("ffmpeg binary: %w", err)
+	}
+	return &FFmpeg{Path: path}, nil
 }
 
 func (f *FFmpeg) Run(ctx context.Context, args ...string) ([]byte, []byte, error) {
