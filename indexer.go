@@ -139,7 +139,10 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		}
 
 		if d.Name()[0] == '.' {
-			return filepath.SkipDir
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		if d.IsDir() {
