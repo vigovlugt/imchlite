@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -23,7 +24,12 @@ func main() {
 	flag.Parse()
 
 	if *libraryLocation == "" {
-		log.Fatal("--library-location is required")
+		if cwd, err := os.Getwd(); err == nil && filepath.Base(cwd) == ".imchlite" {
+			*libraryLocation = ".."
+		} else {
+			*libraryLocation = "."
+		}
+		log.Printf("no --library-location given, using %s", *libraryLocation)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
