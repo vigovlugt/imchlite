@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"golang.design/x/chann"
-
 	exiftoolbin "github.com/vigovlugt/imchlite/exiftool"
 	"github.com/vigovlugt/imchlite/ffmpeg"
 )
@@ -22,8 +20,10 @@ type assetTask struct {
 	Path   string
 }
 
-func newAssetQueue() *chann.Chann[assetTask] {
-	return chann.New[assetTask]()
+const assetQueueSize = 128
+
+func newAssetQueue() chan assetTask {
+	return make(chan assetTask, assetQueueSize)
 }
 
 const (
@@ -65,8 +65,8 @@ func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg
 
 // worker consumes asset tasks from the queue until it is closed. Each worker
 // runs its own exiftool process.
-func (p *processor) worker(et *exiftoolbin.Exiftool, queue *chann.Chann[assetTask], state *indexerState) {
-	for task := range queue.Out() {
+func (p *processor) worker(et *exiftoolbin.Exiftool, queue chan assetTask, state *indexerState) {
+	for task := range queue {
 		if p.ctx.Err() != nil {
 			// Shutting down: drain the queue without touching disk.
 			state.errored.Add(1)

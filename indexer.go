@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"time"
-
-	"golang.design/x/chann"
 )
 
 // indexerState tracks live progress of the background indexer so the api can
@@ -104,8 +102,8 @@ func fileStat(f File) statInfo {
 
 // indexLibrary walks the library and records the run's outcome in the given
 // indexer state.
-func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, assetRepo *assetRepository, queue *chann.Chann[assetTask], state *indexerState) error {
-	if err := walkLibrary(ctx, libraryLocation, fileRepo, assetRepo, queue, state); err != nil {
+func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, queue chan assetTask, state *indexerState) error {
+	if err := walkLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
 		state.fail(err)
 		return err
 	}
@@ -113,7 +111,7 @@ func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRep
 	return nil
 }
 
-func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, assetRepo *assetRepository, queue *chann.Chann[assetTask], state *indexerState) error {
+func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, queue chan assetTask, state *indexerState) error {
 	existingFiles, err := fileRepo.getAll(ctx)
 	if err != nil {
 		return fmt.Errorf("snapshot files: %w", err)
@@ -182,7 +180,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 
 		if existing, ok := fileByPath[relativePath]; ok && fileStat(existing) == stat && !existing.IsOffline {
 			if existing.AssetID == nil {
-				queue.In() <- assetTask{FileID: existing.ID, Path: relativePath}
+				queue <- assetTask{FileID: existing.ID, Path: relativePath}
 			} else {
 				state.skipped.Add(1)
 				state.processed.Add(1)
@@ -213,7 +211,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		}
 		if assetID == nil {
 			// The row has no asset yet; notify the asset worker.
-			queue.In() <- assetTask{FileID: fileID, Path: relativePath}
+			queue <- assetTask{FileID: fileID, Path: relativePath}
 		} else {
 			// The moved file's content is unchanged and already has an
 			// asset, so no processing is needed.

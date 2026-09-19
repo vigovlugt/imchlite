@@ -83,18 +83,15 @@ func main() {
 		})
 	}
 
-	var closeQueue sync.Once
-	closeQueueFn := func() { closeQueue.Do(func() { queue.Close() }) }
-
 	var indexWG sync.WaitGroup
 	indexWG.Go(func() {
 		log.Printf("indexing library %s", *libraryLocation)
-		if err := indexLibrary(ctx, *libraryLocation, fileRepo, assetRepo, queue, state); err != nil {
+		if err := indexLibrary(ctx, *libraryLocation, fileRepo, queue, state); err != nil {
 			log.Printf("indexing failed: %v", err)
 		} else {
 			log.Printf("indexing completed")
 		}
-		closeQueueFn()
+		close(queue)
 	})
 
 	srv := newServer(*addr, state, assetRepo, *libraryLocation)
