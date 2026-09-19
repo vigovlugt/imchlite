@@ -29,7 +29,6 @@ func main() {
 		} else {
 			*libraryLocation = "."
 		}
-		log.Printf("no --library-location given, using %s", *libraryLocation)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
