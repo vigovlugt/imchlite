@@ -10,18 +10,28 @@ function usage(): never {
 
 let cwd = process.cwd();
 
-function git(args: string[], opts?: { allowFail?: boolean }): string {
-  const result = Bun.spawnSync(["git", ...args], {
+function run(args: string[]) {
+  return Bun.spawnSync(["git", ...args], {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
   });
-  if (result.exitCode !== 0 && !opts?.allowFail) {
+}
+
+function git(args: string[]): string {
+  const result = run(args);
+  if (result.exitCode !== 0) {
     const err = result.stderr.toString().trim();
     console.error(err || `git ${args.join(" ")} failed`);
     process.exit(result.exitCode ?? 1);
   }
   return result.stdout.toString().trim();
+}
+
+// rev-parse echoes the argument on stdout when it does not resolve, so the
+// exit code is the only reliable signal here.
+function tagExists(tag: string): boolean {
+  return run(["rev-parse", "--verify", "--quiet", `refs/tags/${tag}`]).exitCode === 0;
 }
 
 const bump = process.argv[2];
@@ -68,7 +78,7 @@ switch (bump as Bump) {
 
 const next = `v${major}.${minor}.${patch}`;
 
-if (git(["rev-parse", next], { allowFail: true })) {
+if (tagExists(next)) {
   console.error(`tag ${next} already exists`);
   process.exit(1);
 }
