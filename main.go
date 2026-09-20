@@ -18,17 +18,21 @@ import (
 )
 
 func main() {
-	libraryLocation := flag.String("library-location", "", "path to the imchlite library")
+	libraryLocationFlag := flag.String("library-location", "", "path to the imchlite library")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
 	workers := flag.Int("workers", 4, "number of parallel asset processors")
 	flag.Parse()
 
-	if *libraryLocation == "" {
+	if *libraryLocationFlag == "" {
 		if cwd, err := os.Getwd(); err == nil && filepath.Base(cwd) == ".imchlite" {
-			*libraryLocation = ".."
+			*libraryLocationFlag = ".."
 		} else {
-			*libraryLocation = "."
+			*libraryLocationFlag = "."
 		}
+	}
+	libraryLocation, err := filepath.Abs(*libraryLocationFlag)
+	if err != nil {
+		log.Fatalf("get absolute path: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -53,7 +57,7 @@ func main() {
 		log.Fatalf("start ffmpeg: %v", err)
 	}
 
-	db, err := openDatabase(*libraryLocation)
+	db, err := openDatabase(libraryLocation)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
@@ -66,7 +70,7 @@ func main() {
 
 	fileRepo := NewFileRepository(db)
 	assetRepo := NewAssetRepository(db)
-	processor := newProcessor(ctx, *libraryLocation, f, fileRepo, assetRepo)
+	processor := newProcessor(ctx, libraryLocation, f, fileRepo, assetRepo)
 	queue := newAssetQueue()
 	state := newIndexerState()
 
@@ -85,8 +89,8 @@ func main() {
 
 	var indexWG sync.WaitGroup
 	indexWG.Go(func() {
-		log.Printf("indexing library %s", *libraryLocation)
-		if err := indexLibrary(ctx, *libraryLocation, fileRepo, queue, state); err != nil {
+		log.Printf("indexing library %s", libraryLocation)
+		if err := indexLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
 			log.Printf("indexing failed: %v", err)
 		} else {
 			log.Printf("indexing completed")
@@ -94,7 +98,7 @@ func main() {
 		queue.Close()
 	})
 
-	srv := newServer(*addr, state, assetRepo, *libraryLocation)
+	srv := newServer(*addr, state, assetRepo, libraryLocation)
 	if err := runServer(ctx, srv); err != nil {
 		log.Printf("serve: %v", err)
 		return

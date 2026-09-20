@@ -113,6 +113,13 @@ type assetQuery struct {
 	Limit  int
 }
 
+// hasOnlineFileCond restricts to assets that still have at least one copy
+// reachable on disk; an asset whose every file went offline is not part of the
+// library any more.
+const hasOnlineFileCond = `exists (
+	select 1 from files f where f.asset_id = a.id and f.is_offline = 0
+)`
+
 // likePattern escapes the sql like wildcards in a path prefix and appends %.
 func likePattern(prefix string) string {
 	pattern := make([]byte, 0, len(prefix)+1)
@@ -139,16 +146,16 @@ type facets struct {
 }
 
 // getFacets returns the distinct countries, cities, top-level paths and the
-// capture-time range across all non-deleted assets.
+// capture-time range across all non-deleted assets that are still online.
 func (r *assetRepository) getFacets(ctx context.Context) (facets, error) {
 	var f facets
 
 	if err := r.db.QueryRowContext(ctx,
 		`select count(*),
-		        min(coalesce(date_time_local, date_time)),
-		        max(coalesce(date_time_local, date_time))
-		 from assets
-		 where deleted_at is null`,
+		        min(coalesce(a.date_time_local, a.date_time)),
+		        max(coalesce(a.date_time_local, a.date_time))
+		 from assets a
+		 where a.deleted_at is null and `+hasOnlineFileCond,
 	).Scan(&f.TotalCount, &f.MinTime, &f.MaxTime); err != nil {
 		return f, fmt.Errorf("asset stats: %w", err)
 	}
@@ -172,21 +179,23 @@ func (r *assetRepository) getFacets(ctx context.Context) (facets, error) {
 
 	var err error
 	if f.Countries, err = scanStrings(
-		`select distinct country from assets
-		 where deleted_at is null and country is not null and country != ''
-		 order by country`); err != nil {
+		`select distinct a.country from assets a
+		 where a.deleted_at is null and a.country is not null and a.country != ''
+		   and ` + hasOnlineFileCond + `
+		 order by a.country`); err != nil {
 		return f, fmt.Errorf("countries: %w", err)
 	}
 	if f.Cities, err = scanStrings(
-		`select distinct city from assets
-		 where deleted_at is null and city is not null and city != ''
-		 order by city`); err != nil {
+		`select distinct a.city from assets a
+		 where a.deleted_at is null and a.city is not null and a.city != ''
+		   and ` + hasOnlineFileCond + `
+		 order by a.city`); err != nil {
 		return f, fmt.Errorf("cities: %w", err)
 	}
 	if f.Paths, err = scanStrings(
 		`select distinct substr(path, 1, instr(path, '/') - 1)
 		 from files
-		 where instr(path, '/') > 0
+		 where instr(path, '/') > 0 and is_offline = 0
 		 order by 1`); err != nil {
 		return f, fmt.Errorf("paths: %w", err)
 	}
@@ -216,7 +225,8 @@ func (r *assetRepository) liveFileForChecksum(ctx context.Context, checksum []by
 
 // query returns the assets matching the filters, newest capture time first,
 // with stable keyset pagination on (capture time, id). The capture time is
-// the wall-clock local date when known, otherwise the UTC instant.
+// the wall-clock local date when known, otherwise the UTC instant. Assets
+// without a single online file are left out.
 func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, error) {
 	limit := q.Limit
 	if limit <= 0 {
@@ -225,7 +235,7 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 		limit = 1000
 	}
 
-	conds := []string{"a.deleted_at is null"}
+	conds := []string{"a.deleted_at is null", hasOnlineFileCond}
 	args := make([]any, 0, len(q.IncludePaths)+len(q.ExcludePaths)+8)
 
 	if q.Type != nil {
