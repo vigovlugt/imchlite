@@ -16,4 +16,4 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/vigovlugt/imchlite/main/scripts/download-latest.ps1 | iex
 ```
 
-Both scripts overwrite an existing archive in the current directory.
+Both scripts extract the binary into the current directory, overwriting an existing one, and discard the archive.
