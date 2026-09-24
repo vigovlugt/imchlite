@@ -8,6 +8,10 @@ type Asset struct {
 	Checksum []byte
 	MimeType string
 
+	// Paths are the relative paths of all of the asset's online files.
+	// Populated by list queries only; nil elsewhere.
+	Paths []string
+
 	Type AssetType
 
 	// timestamps (unix epoch seconds)

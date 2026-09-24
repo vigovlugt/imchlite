@@ -45,6 +45,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
+import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 interface AssetSearch {
@@ -350,18 +351,27 @@ function Lightbox({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="flex items-center justify-between px-4 py-3 text-sm text-neutral-300">
-        <span>
-          {[
-            captureTime(asset)
-              ? dayFormat.format(new Date(captureTime(asset)! * 1000))
-              : undefined,
-            asset.city,
-            asset.country,
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        </span>
+      <div className="flex items-start justify-between gap-4 px-4 py-3 text-sm text-neutral-300">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span>
+            {[
+              captureTime(asset)
+                ? dayFormat.format(new Date(captureTime(asset)! * 1000))
+                : undefined,
+              asset.city,
+              asset.country,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
+          {asset.paths && asset.paths.length > 0 && (
+            <ul className="flex flex-col gap-0.5 font-mono text-xs break-all text-neutral-500">
+              {asset.paths.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </div>
         <Button
           variant="ghost"
           size="icon"
@@ -649,18 +659,18 @@ function AppSidebar({
         </SidebarGroup>
 
         <SidebarGroup>
-          <SidebarGroupLabel>Folders</SidebarGroupLabel>
+          <SidebarGroupLabel>Paths</SidebarGroupLabel>
           <SidebarGroupContent className="flex flex-col gap-2">
             <PathInput
-              label="Included"
+              label="Includes"
               value={includePaths}
-              placeholder="e.g. 2024, 2025/07"
+              placeholder={'e.g.\n2024/*\n2025/07/*'}
               onCommit={(paths) => setFilters({ include: paths.join(',') || undefined })}
             />
             <PathInput
-              label="Excluded"
+              label="Excludes"
               value={excludePaths}
-              placeholder="e.g. 2005"
+              placeholder={'e.g.\n*/originals/*'}
               onCommit={(paths) => setFilters({ exclude: paths.join(',') || undefined })}
             />
           </SidebarGroupContent>
@@ -692,31 +702,32 @@ function PathInput({
   placeholder?: string
   onCommit: (paths: string[]) => void
 }) {
-  const [text, setText] = useState(value.join(', '))
+  const [text, setText] = useState(value.join('\n'))
   useEffect(() => {
-    setText(value.join(', '))
-  }, [value.join(',')])
+    setText(value.join('\n'))
+  }, [value.join('\n')])
 
   const commit = () => {
     const paths = text
-      .split(',')
+      .split('\n')
       .map((p) => p.trim())
       .filter(Boolean)
-    setText(paths.join(', '))
+    setText(paths.join('\n'))
     onCommit(paths)
   }
 
   return (
     <Label className="flex-col items-start gap-1.5">
       <span className="text-xs font-normal text-muted-foreground">{label}</span>
-      <Input
-        type="text"
+      <Textarea
+        rows={2}
+        className="text-xs md:text-xs"
         placeholder={placeholder}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             e.preventDefault()
             commit()
           }

@@ -32,6 +32,8 @@ type assetResponse struct {
 	DurationMs  *int64   `json:"durationMs,omitempty"`
 	Orientation *int64   `json:"orientation,omitempty"`
 	IsFavorite  bool     `json:"isFavorite"`
+	// Paths are the relative paths of the asset's online files.
+	Paths []string `json:"paths,omitempty"`
 }
 
 // assetPage is a page of assets plus the cursor to fetch the next one.
@@ -55,6 +57,7 @@ func newAssetResponse(a Asset) assetResponse {
 		MimeType:   a.MimeType,
 		Type:       assetTypeName(a.Type),
 		IsFavorite: a.IsFavorite,
+		Paths:      a.Paths,
 	}
 	if a.LocalDateTime != 0 {
 		localDateTime := a.LocalDateTime
@@ -116,7 +119,8 @@ func decodeCursor(s string) (assetCursor, error) {
 }
 
 // parseAssetQuery reads the asset filters from query parameters. All
-// parameters are optional.
+// parameters are optional. include_path/exclude_path values are SQLite GLOB
+// patterns matched against each file path.
 func parseAssetQuery(vals url.Values) (assetQuery, error) {
 	q := assetQuery{
 		IncludePaths: toSlashPaths(vals["include_path"]),

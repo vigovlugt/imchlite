@@ -17,6 +17,8 @@ export interface Asset {
   durationMs?: number
   orientation?: number
   isFavorite: boolean
+  /** relative paths of the asset's online files */
+  paths?: string[]
 }
 
 export interface AssetPage {

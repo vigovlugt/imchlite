@@ -96,11 +96,11 @@ type assetCursor struct {
 // assetQuery holds the optional filters for listing assets. Nil/empty fields
 // are not filtered on.
 type assetQuery struct {
-	// IncludePaths: at least one of the asset's files is under one of these
-	// path prefixes.
+	// IncludePaths: at least one of the asset's files matches one of these
+	// SQLite GLOB patterns (e.g. "2024/*").
 	IncludePaths []string
-	// ExcludePaths: none of the asset's files is under any of these path
-	// prefixes.
+	// ExcludePaths: none of the asset's files matches any of these SQLite
+	// GLOB patterns.
 	ExcludePaths []string
 	Type         *AssetType
 	City         *string
@@ -119,20 +119,6 @@ type assetQuery struct {
 const hasOnlineFileCond = `exists (
 	select 1 from files f where f.asset_id = a.id and f.is_offline = 0
 )`
-
-// likePattern escapes the sql like wildcards in a path prefix and appends %.
-func likePattern(prefix string) string {
-	pattern := make([]byte, 0, len(prefix)+1)
-	for i := 0; i < len(prefix); i++ {
-		switch c := prefix[i]; c {
-		case '\\', '%', '_':
-			pattern = append(pattern, '\\', c)
-		default:
-			pattern = append(pattern, c)
-		}
-	}
-	return string(pattern) + "%"
-}
 
 // facets holds the filter suggestions derived from the library contents.
 type facets struct {
@@ -260,13 +246,13 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 	}
 	for _, p := range q.IncludePaths {
 		conds = append(conds,
-			"exists (select 1 from files f where f.asset_id = a.id and f.path like ? escape '\\')")
-		args = append(args, likePattern(p))
+			"exists (select 1 from files f where f.asset_id = a.id and f.path glob ?)")
+		args = append(args, p)
 	}
 	for _, p := range q.ExcludePaths {
 		conds = append(conds,
-			"not exists (select 1 from files f where f.asset_id = a.id and f.path like ? escape '\\')")
-		args = append(args, likePattern(p))
+			"not exists (select 1 from files f where f.asset_id = a.id and f.path glob ?)")
+		args = append(args, p)
 	}
 	if q.Cursor != nil {
 		conds = append(conds, "(coalesce(a.date_time_local, a.date_time) < ? or (coalesce(a.date_time_local, a.date_time) = ? and a.id < ?))")
@@ -277,7 +263,11 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 	sb.WriteString(`select a.id, a.checksum, a.mime_type, a.type,
 		    a.date_time_local, a.date_time, a.time_zone, a.latitude, a.longitude,
 		    a.city, a.country, a.width, a.height, a.duration_ms, a.orientation,
-		    a.is_favorite
+		    a.is_favorite,
+		    (select group_concat(path, char(31))
+		     from (select path from files
+		           where asset_id = a.id and is_offline = 0
+		           order by path))
 		from assets a
 		where `)
 	for i, cond := range conds {
@@ -308,12 +298,14 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 			timeZone, city, country                sql.NullString
 			latitude, longitude                    sql.NullFloat64
 			width, height, durationMs, orientation sql.NullInt64
+			paths                                  sql.NullString
 		)
 		if err := rows.Scan(
 			&a.ID, &a.Checksum, &mimeType, &a.Type,
 			&dateTimeLocal, &dateTime,
 			&timeZone, &latitude, &longitude, &city, &country,
 			&width, &height, &durationMs, &orientation, &a.IsFavorite,
+			&paths,
 		); err != nil {
 			return nil, fmt.Errorf("scan asset: %w", err)
 		}
@@ -329,6 +321,9 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 		a.Height = height.Int64
 		a.DurationMs = durationMs.Int64
 		a.Orientation = orientation.Int64
+		if paths.String != "" {
+			a.Paths = strings.Split(paths.String, "\x1f")
+		}
 		assets = append(assets, a)
 	}
 	if err := rows.Err(); err != nil {
