@@ -20,7 +20,7 @@ import (
 func main() {
 	libraryLocationFlag := flag.String("library-location", "", "path to the imchlite library")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
-	workers := flag.Int("workers", 4, "number of parallel asset processors")
+	workers := flag.Int("workers", 1, "number of parallel asset processors")
 	flag.Parse()
 
 	if *libraryLocationFlag == "" {
