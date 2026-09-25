@@ -18,7 +18,15 @@ go build .
 - Frontend dev: `bun run dev` in `frontend/` (Vite proxies `/api` to `127.0.0.1:3000`, so run the Go backend alongside).
 - Frontend routes: TanStack Router file-based routes in `frontend/src/routes/`; `routeTree.gen.ts` is generated (by the Vite plugin on dev/build, or `bun run generate-routes`) — never edit it by hand.
 - Run app: `go run . --library-location <dir>` — listens on `127.0.0.1:3000` and opens a browser. The library dir gets a `.imchlite/` folder (SQLite db + thumbnails).
-- Tests: `go test ./...` (only `ffmpeg/` has tests).
+- Tests: `go test ./...` (`ffmpeg/` and `ai/` have tests; `ai/` needs onnxruntime, see below).
+
+## NixOS
+
+On NixOS the onnxruntime shared library fails to load under a plain shell (`libstdc++.so.6: cannot open shared object file`). Run anything that initializes onnxruntime through `steam-run`, e.g.:
+
+```
+steam-run go test ./...
+```
 
 ## Embedded binaries
 
