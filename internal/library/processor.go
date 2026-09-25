@@ -24,6 +24,10 @@ type assetTask struct {
 	Path   string
 }
 
+// assetPriority is the priority assigned to asset tasks. Higher values are
+// processed first; tasks of equal priority keep FIFO order.
+const assetPriority = 0
+
 // NewAssetQueue creates the queue the indexer feeds and the workers drain.
 func NewAssetQueue() *queue.Queue[assetTask] {
 	return queue.New[assetTask]()

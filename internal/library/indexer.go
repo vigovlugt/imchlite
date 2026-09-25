@@ -191,7 +191,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 
 		if existing, ok := fileByPath[relativePath]; ok && fileStat(existing) == stat && !existing.IsOffline {
 			if existing.AssetID == nil {
-				queue.Push(assetTask{FileID: existing.ID, Path: relativePath})
+				queue.Push(assetTask{FileID: existing.ID, Path: relativePath}, assetPriority)
 			} else {
 				state.skipped.Add(1)
 				state.processed.Add(1)
@@ -222,7 +222,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 		}
 		if assetID == nil {
 			// The row has no asset yet; notify the asset worker.
-			queue.Push(assetTask{FileID: fileID, Path: relativePath})
+			queue.Push(assetTask{FileID: fileID, Path: relativePath}, assetPriority)
 		} else {
 			// The moved file's content is unchanged and already has an
 			// asset, so no processing is needed.

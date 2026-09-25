@@ -7,20 +7,15 @@ import (
 	"testing"
 )
 
-func TestFIFOWithWrapAndGrow(t *testing.T) {
+func TestFIFOOrder(t *testing.T) {
 	q := New[int]()
-	for i := range 10 {
-		q.Push(i)
+	for i := range 30 {
+		q.Push(i, 0)
 	}
 	for range 4 {
 		if _, ok := q.Pop(); !ok {
 			t.Fatal("unexpected empty queue")
 		}
-	}
-	// Push past the current capacity with head != 0 so both head and
-	// tail indices wrap across the buffer end during grow and pops.
-	for i := 10; i < 30; i++ {
-		q.Push(i)
 	}
 	if got := q.Len(); got != 26 {
 		t.Fatalf("Len() = %d, want %d", got, 26)
@@ -38,10 +33,38 @@ func TestFIFOWithWrapAndGrow(t *testing.T) {
 	}
 }
 
+func TestPriorityOrder(t *testing.T) {
+	q := New[string]()
+	q.Push("low", 1)
+	q.Push("high", 10)
+	q.Push("mid", 5)
+	q.Push("negative", -3)
+	q.Close()
+	for _, want := range []string{"high", "mid", "low", "negative"} {
+		got, ok := q.Pop()
+		if !ok || got != want {
+			t.Fatalf("Pop() = (%q, %v), want (%q, true)", got, ok, want)
+		}
+	}
+}
+
+func TestEqualPriorityStaysFIFO(t *testing.T) {
+	q := New[int]()
+	for i := range 100 {
+		q.Push(i, 5)
+	}
+	for i := range 100 {
+		got, ok := q.Pop()
+		if !ok || got != i {
+			t.Fatalf("Pop() = (%d, %v), want (%d, true)", got, ok, i)
+		}
+	}
+}
+
 func TestCloseDrainsThenReturnsFalse(t *testing.T) {
 	q := New[string]()
-	q.Push("a")
-	q.Push("b")
+	q.Push("a", 0)
+	q.Push("b", 0)
 	q.Close()
 	q.Close() // idempotent
 	for _, want := range []string{"a", "b"} {
@@ -63,7 +86,7 @@ func TestPushAfterClosePanics(t *testing.T) {
 	}()
 	q := New[int]()
 	q.Close()
-	q.Push(1)
+	q.Push(1, 0)
 }
 
 func TestBlockedPopWakesOnClose(t *testing.T) {
@@ -92,7 +115,7 @@ func TestConcurrentProducersConsumers(t *testing.T) {
 	for range producers {
 		producerWG.Go(func() {
 			for range perProducer {
-				q.Push(int(next.Add(1)) - 1)
+				q.Push(int(next.Add(1))-1, 0)
 			}
 		})
 	}
@@ -133,7 +156,7 @@ func TestBlockingPopReceivesPushedValue(t *testing.T) {
 		v, _ := q.Pop()
 		got <- v
 	}()
-	q.Push(42)
+	q.Push(42, 0)
 	if v := <-got; v != 42 {
 		t.Fatalf("Pop() = %d, want 42", v)
 	}
@@ -145,8 +168,8 @@ func TestBlockingPopReceivesPushedValue(t *testing.T) {
 
 func ExampleQueue() {
 	q := New[string]()
-	q.Push("hello")
-	q.Push("world")
+	q.Push("hello", 0)
+	q.Push("world", 0)
 	q.Close()
 	for {
 		v, ok := q.Pop()

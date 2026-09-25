@@ -1,13 +1,53 @@
 package queue
 
-import "sync"
+import (
+	"container/heap"
+	"sync"
+)
+
+// priorityQueueItem is a value queued with a priority. seq is a
+// monotonically increasing sequence number used to keep equal-priority
+// items in FIFO order.
+type priorityQueueItem[T any] struct {
+	value    T
+	priority int
+	seq      uint64
+}
+
+// priorityHeap is a max-heap ordered by priority, breaking ties by seq
+// (lower seq first) so that equal-priority items stay FIFO.
+type priorityHeap[T any] []priorityQueueItem[T]
+
+func (h priorityHeap[T]) Len() int { return len(h) }
+
+func (h priorityHeap[T]) Less(i, j int) bool {
+	if h[i].priority != h[j].priority {
+		return h[i].priority > h[j].priority
+	}
+	return h[i].seq < h[j].seq
+}
+
+func (h priorityHeap[T]) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *priorityHeap[T]) Push(x any) {
+	*h = append(*h, x.(priorityQueueItem[T]))
+}
+
+func (h *priorityHeap[T]) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	var zero priorityQueueItem[T]
+	old[n-1] = zero // release references for the GC
+	*h = old[:n-1]
+	return item
+}
 
 type Queue[T any] struct {
 	mu       sync.Mutex
 	notEmpty *sync.Cond
-	items    []T // ring buffer; len may be 0 before the first push
-	head     int // index of the oldest element
-	count    int // number of elements stored
+	items    priorityHeap[T]
+	nextSeq  uint64
 	closed   bool
 }
 
@@ -17,37 +57,31 @@ func New[T any]() *Queue[T] {
 	return q
 }
 
-func (q *Queue[T]) Push(v T) {
+// Push enqueues v with the given priority; higher priorities are popped
+// first. Items of equal priority are popped in the order they were pushed.
+func (q *Queue[T]) Push(v T, priority int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
 		panic("queue: push on closed queue")
 	}
-	if q.count == len(q.items) {
-		q.grow()
-	}
-	tail := (q.head + q.count) % len(q.items)
-	q.items[tail] = v
-	q.count++
+	heap.Push(&q.items, priorityQueueItem[T]{value: v, priority: priority, seq: q.nextSeq})
+	q.nextSeq++
 	q.notEmpty.Signal()
 }
 
 func (q *Queue[T]) Pop() (v T, ok bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	for q.count == 0 && !q.closed {
+	for q.items.Len() == 0 && !q.closed {
 		q.notEmpty.Wait()
 	}
-	if q.count == 0 {
+	if q.items.Len() == 0 {
 		var zero T
 		return zero, false
 	}
-	v = q.items[q.head]
-	var zero T
-	q.items[q.head] = zero // release references for the GC
-	q.head = (q.head + 1) % len(q.items)
-	q.count--
-	return v, true
+	item := heap.Pop(&q.items).(priorityQueueItem[T])
+	return item.value, true
 }
 
 func (q *Queue[T]) Close() {
@@ -63,16 +97,5 @@ func (q *Queue[T]) Close() {
 func (q *Queue[T]) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.count
-}
-
-func (q *Queue[T]) grow() {
-	newCap := max(2*len(q.items), 8)
-	items := make([]T, newCap)
-	n := copy(items, q.items[q.head:])
-	if n < q.count {
-		copy(items[n:], q.items[:q.count-n])
-	}
-	q.items = items
-	q.head = 0
+	return q.items.Len()
 }
