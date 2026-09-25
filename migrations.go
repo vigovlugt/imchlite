@@ -15,7 +15,6 @@ var migrations = []migration{
 	{version: 1, up: migration001},
 }
 
-// Imchlite is in prerelease, make direct edits to migration001 instead of introducing new migrations.
 func migration001(tx *sql.Tx) error {
 	statements := []string{
 		`create table if not exists assets (
