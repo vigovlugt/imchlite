@@ -54,10 +54,13 @@ func (f *FFmpeg) Run(ctx context.Context, args ...string) ([]byte, []byte, error
 }
 
 func (f *FFmpeg) Thumbnail(ctx context.Context, source, dest string, size, quality int) error {
+	filter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", size, size)
 	_, _, err := f.Run(ctx,
 		"-y",
 		"-i", source,
-		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", size, size),
+		// Complex filtergraph for tiled HEIF/HEIC images (Apple Photos).
+		"-filter_complex", filter+"[out]",
+		"-map", "[out]",
 		"-frames:v", "1",
 		"-q:v", strconv.Itoa(quality),
 		dest,

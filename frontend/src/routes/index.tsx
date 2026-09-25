@@ -1,7 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
-import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { ChevronLeftIcon, ChevronRightIcon, ImageIcon, PlayIcon, StarIcon, XIcon } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createFileRoute } from "@tanstack/react-router";
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useQuery,
+} from "@tanstack/react-query";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ImageIcon,
+  PlayIcon,
+  StarIcon,
+  XIcon,
+} from "lucide-react";
 import {
   fetchAssets,
   fetchFacets,
@@ -11,25 +22,25 @@ import {
   type Asset,
   type AssetFilters,
   type IndexStatus,
-} from '#/lib/api'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+} from "#/lib/api";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
-} from '@/components/ui/empty'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+} from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select'
+} from "@/components/ui/select";
 import {
   Sidebar,
   SidebarContent,
@@ -42,162 +53,178 @@ import {
   SidebarProvider,
   SidebarRail,
   SidebarTrigger,
-} from '@/components/ui/sidebar'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Spinner } from '@/components/ui/spinner'
-import { Textarea } from '@/components/ui/textarea'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+} from "@/components/ui/sidebar";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 interface AssetSearch {
-  type?: 'image' | 'video'
-  city?: string
-  country?: string
-  include?: string
-  exclude?: string
-  from?: number
-  until?: number
+  type?: "image" | "video";
+  city?: string;
+  country?: string;
+  include?: string;
+  exclude?: string;
+  from?: number;
+  until?: number;
 }
 
 function parseSearch(search: Record<string, unknown>): AssetSearch {
-  const s: AssetSearch = {}
-  if (search.type === 'image' || search.type === 'video') s.type = search.type
-  if (typeof search.city === 'string' && search.city) s.city = search.city
-  if (typeof search.country === 'string' && search.country) s.country = search.country
-  if (typeof search.include === 'string' && search.include) s.include = search.include
-  if (typeof search.exclude === 'string' && search.exclude) s.exclude = search.exclude
-  if (typeof search.from === 'number' && Number.isFinite(search.from)) s.from = search.from
-  if (typeof search.until === 'number' && Number.isFinite(search.until)) s.until = search.until
-  return s
+  const s: AssetSearch = {};
+  if (search.type === "image" || search.type === "video") s.type = search.type;
+  if (typeof search.city === "string" && search.city) s.city = search.city;
+  if (typeof search.country === "string" && search.country)
+    s.country = search.country;
+  if (typeof search.include === "string" && search.include)
+    s.include = search.include;
+  if (typeof search.exclude === "string" && search.exclude)
+    s.exclude = search.exclude;
+  if (typeof search.from === "number" && Number.isFinite(search.from))
+    s.from = search.from;
+  if (typeof search.until === "number" && Number.isFinite(search.until))
+    s.until = search.until;
+  return s;
 }
 
-export const Route = createFileRoute('/')({
+export const Route = createFileRoute("/")({
   validateSearch: parseSearch,
   component: Home,
-})
+});
 
 function filtersFromSearch(search: AssetSearch): AssetFilters {
   return {
     type: search.type,
     city: search.city,
     country: search.country,
-    includePaths: search.include ? search.include.split(',') : [],
-    excludePaths: search.exclude ? search.exclude.split(',') : [],
+    includePaths: search.include ? search.include.split(",") : [],
+    excludePaths: search.exclude ? search.exclude.split(",") : [],
     from: search.from,
     until: search.until,
-  }
+  };
 }
 
 const dayFormat = new Intl.DateTimeFormat(undefined, {
-  weekday: 'long',
-  year: 'numeric',
-  month: 'long',
-  day: 'numeric',
-})
+  weekday: "long",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
 
 interface DayGroup {
-  key: string
-  label: string
-  assets: Asset[]
+  key: string;
+  label: string;
+  assets: Asset[];
 }
 
 function groupByDay(assets: Asset[]): DayGroup[] {
-  const groups: DayGroup[] = []
-  let current: DayGroup | undefined
+  const groups: DayGroup[] = [];
+  let current: DayGroup | undefined;
   for (const a of assets) {
-    const time = captureTime(a)
-    const key = time ? toDateKey(new Date(time * 1000)) : 'unknown'
+    const time = captureTime(a);
+    const key = time ? toDateKey(new Date(time * 1000)) : "unknown";
     if (!current || current.key !== key) {
       current = {
         key,
-        label: key === 'unknown' ? 'Unknown date' : dayFormat.format(new Date(time * 1000)),
+        label:
+          key === "unknown"
+            ? "Unknown date"
+            : dayFormat.format(new Date(time * 1000)),
         assets: [],
-      }
-      groups.push(current)
+      };
+      groups.push(current);
     }
-    current.assets.push(a)
+    current.assets.push(a);
   }
-  return groups
+  return groups;
 }
 
 /** The capture time to display: wall clock when known, else the UTC instant. */
 function captureTime(a: Asset): number | undefined {
-  return a.localDateTime ?? a.dateTime
+  return a.localDateTime ?? a.dateTime;
 }
 
 function toDateKey(d: Date): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${m}-${day}`
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
 }
 
 function dateInputToEpoch(value: string, endOfDay = false): number | undefined {
-  const [y, m, d] = value.split('-').map(Number)
-  if (!y || !m || !d) return undefined
-  const date = endOfDay ? new Date(y, m - 1, d, 23, 59, 59, 999) : new Date(y, m - 1, d)
-  return Math.floor(date.getTime() / 1000)
+  const [y, m, d] = value.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  const date = endOfDay
+    ? new Date(y, m - 1, d, 23, 59, 59, 999)
+    : new Date(y, m - 1, d);
+  return Math.floor(date.getTime() / 1000);
 }
 
 function epochToDateInput(sec: number | undefined): string {
-  if (sec === undefined) return ''
-  return toDateKey(new Date(sec * 1000))
+  if (sec === undefined) return "";
+  return toDateKey(new Date(sec * 1000));
 }
 
 function formatDuration(ms: number | undefined): string {
-  if (!ms) return ''
-  const total = Math.round(ms / 1000)
-  const m = Math.floor(total / 60)
-  const s = total % 60
-  return `${m}:${String(s).padStart(2, '0')}`
+  if (!ms) return "";
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function Home() {
-  const search = Route.useSearch()
-  const navigate = Route.useNavigate()
-  const filters = useMemo(() => filtersFromSearch(search), [search])
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const filters = useMemo(() => filtersFromSearch(search), [search]);
 
   const setFilters = useCallback(
     (patch: Partial<AssetSearch>) => {
-      void navigate({ search: (prev: AssetSearch) => ({ ...prev, ...patch }) })
+      void navigate({ search: (prev: AssetSearch) => ({ ...prev, ...patch }) });
     },
     [navigate],
-  )
+  );
 
   const facetsQuery = useQuery({
-    queryKey: ['facets'],
+    queryKey: ["facets"],
     queryFn: ({ signal }) => fetchFacets(signal),
-  })
+  });
 
   const assetsQuery = useInfiniteQuery({
-    queryKey: ['assets', filters],
+    queryKey: ["assets", filters],
     queryFn: ({ pageParam, signal }) => fetchAssets(filters, pageParam, signal),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor,
     placeholderData: keepPreviousData,
-  })
+  });
 
   const assets = useMemo(
     () => assetsQuery.data?.pages.flatMap((p) => p.assets) ?? [],
     [assetsQuery.data],
-  )
-  const days = useMemo(() => groupByDay(assets), [assets])
+  );
+  const days = useMemo(() => groupByDay(assets), [assets]);
 
-  const sentinelRef = useRef<HTMLDivElement>(null)
+  const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const el = sentinelRef.current
-    if (!el) return
+    const el = sentinelRef.current;
+    if (!el) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && assetsQuery.hasNextPage && !assetsQuery.isFetching) {
-          void assetsQuery.fetchNextPage()
+        if (
+          entries[0].isIntersecting &&
+          assetsQuery.hasNextPage &&
+          !assetsQuery.isFetching
+        ) {
+          void assetsQuery.fetchNextPage();
         }
       },
-      { rootMargin: '800px' },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [assetsQuery])
+      { rootMargin: "800px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [assetsQuery]);
 
-  const [lightboxIndex, setLightboxIndex] = useState<number | undefined>(undefined)
+  const [lightboxIndex, setLightboxIndex] = useState<number | undefined>(
+    undefined,
+  );
 
   const hasFilters =
     filters.type !== undefined ||
@@ -206,7 +233,7 @@ function Home() {
     filters.includePaths.length > 0 ||
     filters.excludePaths.length > 0 ||
     filters.from !== undefined ||
-    filters.until !== undefined
+    filters.until !== undefined;
 
   return (
     <SidebarProvider>
@@ -224,8 +251,12 @@ function Home() {
           {assetsQuery.isPending ? (
             <Spinner className="text-muted-foreground" />
           ) : null}
-          {assetsQuery.isFetching && <Spinner className="text-muted-foreground" />}
-          {assetsQuery.isError && <Badge variant="destructive">{assetsQuery.error.message}</Badge>}
+          {assetsQuery.isFetching && (
+            <Spinner className="text-muted-foreground" />
+          )}
+          {assetsQuery.isError && (
+            <Badge variant="destructive">{assetsQuery.error.message}</Badge>
+          )}
         </header>
 
         <div className="flex-1 overflow-y-auto">
@@ -243,7 +274,8 @@ function Home() {
                 </EmptyMedia>
                 <EmptyTitle>No assets found</EmptyTitle>
                 <EmptyDescription>
-                  Nothing matches the current filters. Try adjusting or clearing them.
+                  Nothing matches the current filters. Try adjusting or clearing
+                  them.
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
@@ -253,7 +285,9 @@ function Home() {
                 <section key={day.key}>
                   <div className="sticky top-0 z-10 flex items-baseline gap-3 bg-background px-6 py-3">
                     <h2 className="text-xl font-semibold">{day.label}</h2>
-                    <span className="text-sm text-muted-foreground">{day.assets.length}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {day.assets.length}
+                    </span>
                   </div>
                   <div className="grid gap-0.5 px-6 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
                     {day.assets.map((asset) => (
@@ -261,7 +295,9 @@ function Home() {
                         key={asset.id}
                         asset={asset}
                         onClick={() =>
-                          setLightboxIndex(assets.findIndex((a) => a.id === asset.id))
+                          setLightboxIndex(
+                            assets.findIndex((a) => a.id === asset.id),
+                          )
                         }
                       />
                     ))}
@@ -283,7 +319,11 @@ function Home() {
         <Lightbox
           asset={assets[lightboxIndex]}
           onClose={() => setLightboxIndex(undefined)}
-          onPrev={lightboxIndex > 0 ? () => setLightboxIndex(lightboxIndex - 1) : undefined}
+          onPrev={
+            lightboxIndex > 0
+              ? () => setLightboxIndex(lightboxIndex - 1)
+              : undefined
+          }
           onNext={
             lightboxIndex < assets.length - 1
               ? () => setLightboxIndex(lightboxIndex + 1)
@@ -292,7 +332,7 @@ function Home() {
         />
       )}
     </SidebarProvider>
-  )
+  );
 }
 
 function AssetCell({ asset, onClick }: { asset: Asset; onClick: () => void }) {
@@ -308,7 +348,7 @@ function AssetCell({ asset, onClick }: { asset: Asset; onClick: () => void }) {
         loading="lazy"
         className="h-full w-full object-cover transition group-hover:scale-105"
       />
-      {asset.type === 'video' && (
+      {asset.type === "video" && (
         <span className="absolute bottom-1 left-1 inline-flex items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-xs text-white">
           <PlayIcon className="size-3" />
           {formatDuration(asset.durationMs)}
@@ -320,7 +360,7 @@ function AssetCell({ asset, onClick }: { asset: Asset; onClick: () => void }) {
         </span>
       )}
     </button>
-  )
+  );
 }
 
 function Lightbox({
@@ -329,26 +369,26 @@ function Lightbox({
   onPrev,
   onNext,
 }: {
-  asset: Asset
-  onClose: () => void
-  onPrev?: () => void
-  onNext?: () => void
+  asset: Asset;
+  onClose: () => void;
+  onPrev?: () => void;
+  onNext?: () => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-      if (e.key === 'ArrowLeft') onPrev?.()
-      if (e.key === 'ArrowRight') onNext?.()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, onPrev, onNext])
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft") onPrev?.();
+      if (e.key === "ArrowRight") onNext?.();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, onPrev, onNext]);
 
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col bg-black/95"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="flex items-start justify-between gap-4 px-4 py-3 text-sm text-neutral-300">
@@ -362,7 +402,7 @@ function Lightbox({
               asset.country,
             ]
               .filter(Boolean)
-              .join(' · ')}
+              .join(" · ")}
           </span>
           {asset.paths && asset.paths.length > 0 && (
             <ul className="flex flex-col gap-0.5 font-mono text-xs break-all text-neutral-500">
@@ -384,7 +424,7 @@ function Lightbox({
       <div
         className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4"
         onClick={(e) => {
-          if (e.target === e.currentTarget) onClose()
+          if (e.target === e.currentTarget) onClose();
         }}
       >
         {onPrev && (
@@ -397,7 +437,7 @@ function Lightbox({
             <ChevronLeftIcon />
           </Button>
         )}
-        {asset.type === 'video' ? (
+        {asset.type === "video" ? (
           <video
             src={mediaUrl(asset.checksum)}
             controls
@@ -423,18 +463,18 @@ function Lightbox({
         )}
       </div>
     </div>
-  )
+  );
 }
 
 function IndexerStats() {
   const statusQuery = useQuery({
-    queryKey: ['indexStatus'],
+    queryKey: ["indexStatus"],
     queryFn: ({ signal }) => fetchIndexStatus(signal),
     refetchInterval: (query) => {
-      const phase = query.state.data?.phase
-      return phase === 'indexing' || phase === 'processing' ? 1000 : 5000
+      const phase = query.state.data?.phase;
+      return phase === "indexing" || phase === "processing" ? 1000 : 5000;
     },
-  })
+  });
 
   return (
     <div className="px-4 py-3">
@@ -444,51 +484,54 @@ function IndexerStats() {
       {statusQuery.isPending ? (
         <Spinner className="mt-2 text-muted-foreground" />
       ) : statusQuery.isError ? (
-        <p className="mt-2 text-xs text-destructive">{statusQuery.error.message}</p>
+        <p className="mt-2 text-xs text-destructive">
+          {statusQuery.error.message}
+        </p>
       ) : statusQuery.data ? (
         <IndexerStatsBody status={statusQuery.data} />
       ) : null}
     </div>
-  )
+  );
 }
 
 function formatEta(seconds: number) {
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
-  const hours = Math.floor(minutes / 60)
-  return `${hours}h ${minutes % 60}m`
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function IndexerStatsBody({ status }: { status: IndexStatus }) {
   const percent =
     status.discovered > 0
       ? Math.min(100, Math.round((status.processed / status.discovered) * 100))
-      : 0
+      : 0;
   const state =
-    status.phase === 'indexing'
-      ? 'Indexing'
-      : status.phase === 'processing'
-        ? 'Processing'
-        : status.phase === 'failed'
-          ? 'Failed'
-          : 'Completed'
-  const showEta = status.etaSeconds !== undefined && status.etaSeconds > 0
+    status.phase === "indexing"
+      ? "Indexing"
+      : status.phase === "processing"
+        ? "Processing"
+        : status.phase === "failed"
+          ? "Failed"
+          : "Completed";
+  const showEta = status.etaSeconds !== undefined && status.etaSeconds > 0;
 
   return (
     <div className="mt-2 space-y-1.5">
       <div className="flex items-baseline justify-between gap-2 text-xs">
         <span className="text-muted-foreground">{state}</span>
         <span className="font-medium tabular-nums">
-          {status.processed.toLocaleString()} / {status.discovered.toLocaleString()}
-          {status.phase === 'indexing' ? '+' : ''}
+          {status.processed.toLocaleString()} /{" "}
+          {status.discovered.toLocaleString()}
+          {status.phase === "indexing" ? "+" : ""}
         </span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        {status.phase !== 'indexing' && (
+        {status.phase !== "indexing" && (
           <div
             className={`h-full rounded-full transition-[width] duration-500 ${
-              status.failed ? 'bg-destructive' : 'bg-primary'
+              status.failed ? "bg-destructive" : "bg-primary"
             }`}
             style={{ width: `${percent}%` }}
           />
@@ -497,14 +540,16 @@ function IndexerStatsBody({ status }: { status: IndexStatus }) {
       {showEta && (
         <p className="text-xs tabular-nums text-muted-foreground">
           ~{formatEta(status.etaSeconds!)}
-          {status.phase === 'indexing' ? '+' : ''} remaining
+          {status.phase === "indexing" ? "+" : ""} remaining
         </p>
       )}
       {status.error && (
-        <p className="pt-1 text-xs break-words text-destructive">{status.error}</p>
+        <p className="pt-1 text-xs break-words text-destructive">
+          {status.error}
+        </p>
       )}
     </div>
-  )
+  );
 }
 
 function AppSidebar({
@@ -514,17 +559,17 @@ function AppSidebar({
   hasFilters,
 }: {
   facets?: {
-    countries: string[]
-    cities: string[]
-    paths: string[]
-    totalCount: number
-  }
-  search: AssetSearch
-  setFilters: (patch: Partial<AssetSearch>) => void
-  hasFilters: boolean
+    countries: string[];
+    cities: string[];
+    paths: string[];
+    totalCount: number;
+  };
+  search: AssetSearch;
+  setFilters: (patch: Partial<AssetSearch>) => void;
+  hasFilters: boolean;
 }) {
-  const includePaths = search.include ? search.include.split(',') : []
-  const excludePaths = search.exclude ? search.exclude.split(',') : []
+  const includePaths = search.include ? search.include.split(",") : [];
+  const excludePaths = search.exclude ? search.exclude.split(",") : [];
 
   const clearAll = () =>
     setFilters({
@@ -535,7 +580,7 @@ function AppSidebar({
       exclude: undefined,
       from: undefined,
       until: undefined,
-    })
+    });
 
   return (
     <Sidebar>
@@ -558,22 +603,24 @@ function AppSidebar({
               variant="outline"
               size="sm"
               spacing={4}
-              value={search.type ? [search.type] : ['all']}
+              value={search.type ? [search.type] : ["all"]}
               onValueChange={(value: string[]) =>
                 setFilters({
                   type:
-                    value[0] === 'image' || value[0] === 'video' ? value[0] : undefined,
+                    value[0] === "image" || value[0] === "video"
+                      ? value[0]
+                      : undefined,
                 })
               }
               className="w-full"
             >
-              <ToggleGroupItem value="all" className="flex-1">
+              <ToggleGroupItem value="all" className="flex-1 w-full">
                 All
               </ToggleGroupItem>
-              <ToggleGroupItem value="image" className="flex-1">
+              <ToggleGroupItem value="image" className="flex-1 w-full">
                 Images
               </ToggleGroupItem>
-              <ToggleGroupItem value="video" className="flex-1">
+              <ToggleGroupItem value="video" className="flex-1 w-full">
                 Videos
               </ToggleGroupItem>
             </ToggleGroup>
@@ -585,11 +632,16 @@ function AppSidebar({
           <SidebarGroupContent>
             <Select
               items={[
-                { value: '', label: 'All countries' },
-                ...(facets?.countries ?? []).map((c) => ({ value: c, label: c })),
+                { value: "", label: "All countries" },
+                ...(facets?.countries ?? []).map((c) => ({
+                  value: c,
+                  label: c,
+                })),
               ]}
-              value={search.country ?? ''}
-              onValueChange={(value) => setFilters({ country: (value as string) || undefined })}
+              value={search.country ?? ""}
+              onValueChange={(value) =>
+                setFilters({ country: (value as string) || undefined })
+              }
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -611,11 +663,13 @@ function AppSidebar({
           <SidebarGroupContent>
             <Select
               items={[
-                { value: '', label: 'All cities' },
+                { value: "", label: "All cities" },
                 ...(facets?.cities ?? []).map((c) => ({ value: c, label: c })),
               ]}
-              value={search.city ?? ''}
-              onValueChange={(value) => setFilters({ city: (value as string) || undefined })}
+              value={search.city ?? ""}
+              onValueChange={(value) =>
+                setFilters({ city: (value as string) || undefined })
+              }
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -635,23 +689,31 @@ function AppSidebar({
         <SidebarGroup>
           <SidebarGroupLabel>Date range</SidebarGroupLabel>
           <SidebarGroupContent className="flex flex-col gap-2">
-            <Label className="text-xs font-normal text-muted-foreground">From</Label>
+            <Label className="text-xs font-normal text-muted-foreground">
+              From
+            </Label>
             <Input
               type="date"
               value={epochToDateInput(search.from)}
               onChange={(e) =>
                 setFilters({
-                  from: e.target.value ? dateInputToEpoch(e.target.value) : undefined,
+                  from: e.target.value
+                    ? dateInputToEpoch(e.target.value)
+                    : undefined,
                 })
               }
             />
-            <Label className="text-xs font-normal text-muted-foreground">Until</Label>
+            <Label className="text-xs font-normal text-muted-foreground">
+              Until
+            </Label>
             <Input
               type="date"
               value={epochToDateInput(search.until)}
               onChange={(e) =>
                 setFilters({
-                  until: e.target.value ? dateInputToEpoch(e.target.value, true) : undefined,
+                  until: e.target.value
+                    ? dateInputToEpoch(e.target.value, true)
+                    : undefined,
                 })
               }
             />
@@ -664,14 +726,18 @@ function AppSidebar({
             <PathInput
               label="Includes"
               value={includePaths}
-              placeholder={'e.g.\n2024/*\n2025/07/*'}
-              onCommit={(paths) => setFilters({ include: paths.join(',') || undefined })}
+              placeholder={"path/*"}
+              onCommit={(paths) =>
+                setFilters({ include: paths.join(",") || undefined })
+              }
             />
             <PathInput
               label="Excludes"
               value={excludePaths}
-              placeholder={'e.g.\n*/originals/*'}
-              onCommit={(paths) => setFilters({ exclude: paths.join(',') || undefined })}
+              placeholder={"path/*"}
+              onCommit={(paths) =>
+                setFilters({ exclude: paths.join(",") || undefined })
+              }
             />
           </SidebarGroupContent>
         </SidebarGroup>
@@ -688,7 +754,7 @@ function AppSidebar({
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>
-  )
+  );
 }
 
 function PathInput({
@@ -697,24 +763,24 @@ function PathInput({
   placeholder,
   onCommit,
 }: {
-  label: string
-  value: string[]
-  placeholder?: string
-  onCommit: (paths: string[]) => void
+  label: string;
+  value: string[];
+  placeholder?: string;
+  onCommit: (paths: string[]) => void;
 }) {
-  const [text, setText] = useState(value.join('\n'))
+  const [text, setText] = useState(value.join("\n"));
   useEffect(() => {
-    setText(value.join('\n'))
-  }, [value.join('\n')])
+    setText(value.join("\n"));
+  }, [value.join("\n")]);
 
   const commit = () => {
     const paths = text
-      .split('\n')
+      .split("\n")
       .map((p) => p.trim())
-      .filter(Boolean)
-    setText(paths.join('\n'))
-    onCommit(paths)
-  }
+      .filter(Boolean);
+    setText(paths.join("\n"));
+    onCommit(paths);
+  };
 
   return (
     <Label className="flex-col items-start gap-1.5">
@@ -727,12 +793,12 @@ function PathInput({
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault()
-            commit()
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            commit();
           }
         }}
       />
     </Label>
-  )
+  );
 }
