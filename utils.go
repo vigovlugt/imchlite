@@ -14,6 +14,14 @@ const (
 	AssetTypeVideo AssetType = 1
 )
 
+// ThumbnailStatus: 0 = ok, 1 = failed
+type ThumbnailStatus int
+
+const (
+	ThumbnailStatusOK     ThumbnailStatus = 0
+	ThumbnailStatusFailed ThumbnailStatus = 1
+)
+
 // resolveLibraryPath resolves a path stored relative to the library root for
 // filesystem access. Stored paths always use forward slashes; this is the
 // single conversion point back to OS-native separators. Keeping this

@@ -27,9 +27,9 @@ func (r *assetRepository) getByChecksum(ctx context.Context, checksum []byte) (*
 		width, height, durationMs sql.NullInt64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`select id, mime_type, type, width, height, duration_ms
+		`select id, mime_type, type, width, height, duration_ms, thumbnail_status
 		 from assets where checksum = ?`, checksum).Scan(
-		&a.ID, &mimeType, &assetType, &width, &height, &durationMs)
+		&a.ID, &mimeType, &assetType, &width, &height, &durationMs, &a.ThumbnailStatus)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -75,12 +75,12 @@ func (r *assetRepository) insert(ctx context.Context, a *Asset) error {
 	if _, err := r.db.ExecContext(ctx,
 		`insert into assets (checksum, mime_type, type, file_created_at, file_modified_at,
 		    date_time_local, date_time, time_zone, latitude, longitude, city, country,
-		    width, height, duration_ms, orientation)
-		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    width, height, duration_ms, orientation, thumbnail_status)
+		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 on conflict (checksum) do nothing`,
 		a.Checksum, mimeType, a.Type, a.FileCreatedAt, a.FileModifiedAt,
 		dateTimeLocal, dateTime, timeZone, latitude, longitude, city, country,
-		a.Width, a.Height, a.DurationMs, a.Orientation); err != nil {
+		a.Width, a.Height, a.DurationMs, a.Orientation, a.ThumbnailStatus); err != nil {
 		return fmt.Errorf("insert asset: %w", err)
 	}
 	return nil
@@ -263,7 +263,7 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 	sb.WriteString(`select a.id, a.checksum, a.mime_type, a.type,
 		    a.date_time_local, a.date_time, a.time_zone, a.latitude, a.longitude,
 		    a.city, a.country, a.width, a.height, a.duration_ms, a.orientation,
-		    a.is_favorite,
+		    a.is_favorite, a.thumbnail_status,
 		    (select group_concat(path, char(31))
 		     from (select path from files
 		           where asset_id = a.id and is_offline = 0
@@ -305,6 +305,7 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 			&dateTimeLocal, &dateTime,
 			&timeZone, &latitude, &longitude, &city, &country,
 			&width, &height, &durationMs, &orientation, &a.IsFavorite,
+			&a.ThumbnailStatus,
 			&paths,
 		); err != nil {
 			return nil, fmt.Errorf("scan asset: %w", err)

@@ -215,6 +215,7 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 	thumbStart := time.Now()
 	if err := p.createThumbnail(checksum, absolutePath, data); err != nil {
 		log.Printf("thumbnail for %s: %v", task.Path, err)
+		asset.ThumbnailStatus = ThumbnailStatusFailed
 	}
 	timings.thumbMs = time.Since(thumbStart).Milliseconds()
 

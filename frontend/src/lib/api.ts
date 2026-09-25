@@ -53,6 +53,10 @@ export function mediaUrl(checksum: string): string {
   return `/api/media/${checksum}`
 }
 
+export function downloadUrl(checksum: string): string {
+  return `/api/media/${checksum}?download=1`
+}
+
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, { signal })
   if (!res.ok) {

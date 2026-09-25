@@ -36,6 +36,9 @@ type Asset struct {
 	DurationMs  int64
 	Orientation int64
 
+	// ThumbnailStatus records whether the webp thumbnail was generated.
+	ThumbnailStatus ThumbnailStatus
+
 	// Thumbhash []byte
 
 	// user state

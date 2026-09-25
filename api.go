@@ -230,6 +230,12 @@ func registerAssetRoutes(mux *http.ServeMux, assets *assetRepository, libraryLoc
 		} else if ct := mime.TypeByExtension(strings.ToLower(filepath.Ext(relativePath))); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
+		// ?download=1 forces a save dialog with the original filename.
+		if r.URL.Query().Get("download") != "" {
+			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{
+				"filename": filepath.Base(relativePath),
+			}))
+		}
 		http.ServeFile(w, r, resolveLibraryPath(libraryLocation, relativePath))
 	})
 

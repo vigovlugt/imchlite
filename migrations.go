@@ -49,6 +49,9 @@ func migration001(tx *sql.Tx) error {
 		    duration_ms integer,
 		    orientation integer,
 
+		    -- ThumbnailStatus: 0 = ok, 1 = failed
+		    thumbnail_status integer not null default 0,
+
 		    -- user state
 		    is_favorite integer not null default 0,
 		    deleted_at integer,

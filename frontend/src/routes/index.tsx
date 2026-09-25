@@ -8,12 +8,14 @@ import {
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
+  DownloadIcon,
   ImageIcon,
   PlayIcon,
   StarIcon,
   XIcon,
 } from "lucide-react";
 import {
+  downloadUrl,
   fetchAssets,
   fetchFacets,
   fetchIndexStatus,
@@ -412,14 +414,25 @@ function Lightbox({
             </ul>
           )}
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onClose}
-          className="text-neutral-400 hover:bg-white/10 hover:text-white"
-        >
-          <XIcon />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            render={<a href={downloadUrl(asset.checksum)} download />}
+            nativeButton={false}
+            className="text-neutral-400 hover:bg-white/10 hover:text-white"
+          >
+            <DownloadIcon />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            className="text-neutral-400 hover:bg-white/10 hover:text-white"
+          >
+            <XIcon />
+          </Button>
+        </div>
       </div>
       <div
         className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4"
