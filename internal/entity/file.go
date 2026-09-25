@@ -1,4 +1,4 @@
-package main
+package entity
 
 // File mirrors the file table in migration001.
 type File struct {

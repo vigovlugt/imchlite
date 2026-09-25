@@ -1,27 +1,29 @@
-package main
+package repository
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/vigovlugt/imchlite/internal/entity"
 )
 
-// assetRepository owns the database pool for asset persistence.
-type assetRepository struct {
+// Asset owns the database pool for asset persistence.
+type Asset struct {
 	db *sql.DB
 }
 
-// NewAssetRepository creates an assetRepository backed by the given pool.
-func NewAssetRepository(db *sql.DB) *assetRepository {
-	return &assetRepository{db: db}
+// NewAsset creates an AssetRepository backed by the given pool.
+func NewAsset(db *sql.DB) *Asset {
+	return &Asset{db: db}
 }
 
-// getByChecksum returns the asset with the given content checksum, or nil if
+// GetByChecksum returns the asset with the given content checksum, or nil if
 // no asset holds that content yet.
-func (r *assetRepository) getByChecksum(ctx context.Context, checksum []byte) (*Asset, error) {
+func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Asset, error) {
 	var (
-		a                         Asset
+		a                         entity.Asset
 		mimeType                  sql.NullString
 		assetType                 sql.NullInt64
 		width, height, durationMs sql.NullInt64
@@ -39,16 +41,16 @@ func (r *assetRepository) getByChecksum(ctx context.Context, checksum []byte) (*
 
 	a.Checksum = checksum
 	a.MimeType = mimeType.String
-	a.Type = AssetType(assetType.Int64)
+	a.Type = entity.AssetType(assetType.Int64)
 	a.Width = width.Int64
 	a.Height = height.Int64
 	a.DurationMs = durationMs.Int64
 	return &a, nil
 }
 
-// insert adds a new asset row. If an asset with the same checksum already
+// Insert adds a new asset row. If an asset with the same checksum already
 // exists (a concurrent worker won the race) the insert is a no-op.
-func (r *assetRepository) insert(ctx context.Context, a *Asset) error {
+func (r *Asset) Insert(ctx context.Context, a *entity.Asset) error {
 	var mimeType, dateTimeLocal, dateTime, timeZone, city, country any
 	if a.MimeType != "" {
 		mimeType = a.MimeType
@@ -86,30 +88,30 @@ func (r *assetRepository) insert(ctx context.Context, a *Asset) error {
 	return nil
 }
 
-// assetCursor is the keyset pagination position: the capture time and id of
+// AssetCursor is the keyset pagination position: the capture time and id of
 // the last asset of the previous page.
-type assetCursor struct {
+type AssetCursor struct {
 	Time int64
 	ID   int64
 }
 
-// assetQuery holds the optional filters for listing assets. Nil/empty fields
+// AssetQuery holds the optional filters for listing assets. Nil/empty fields
 // are not filtered on.
-type assetQuery struct {
+type AssetQuery struct {
 	// IncludePaths: at least one of the asset's files matches one of these
 	// SQLite GLOB patterns (e.g. "2024/*").
 	IncludePaths []string
 	// ExcludePaths: none of the asset's files matches any of these SQLite
 	// GLOB patterns.
 	ExcludePaths []string
-	Type         *AssetType
+	Type         *entity.AssetType
 	City         *string
 	Country      *string
 	// From/Until bound the capture time (unix epoch seconds), inclusive.
 	From  *int64
 	Until *int64
 	// Cursor is the keyset pagination position.
-	Cursor *assetCursor
+	Cursor *AssetCursor
 	Limit  int
 }
 
@@ -120,8 +122,8 @@ const hasOnlineFileCond = `exists (
 	select 1 from files f where f.asset_id = a.id and f.is_offline = 0
 )`
 
-// facets holds the filter suggestions derived from the library contents.
-type facets struct {
+// Facets holds the filter suggestions derived from the library contents.
+type Facets struct {
 	Countries []string `json:"countries"`
 	Cities    []string `json:"cities"`
 	// Paths are the top-level directories present in the library.
@@ -131,10 +133,10 @@ type facets struct {
 	TotalCount int64    `json:"totalCount"`
 }
 
-// getFacets returns the distinct countries, cities, top-level paths and the
+// GetFacets returns the distinct countries, cities, top-level paths and the
 // capture-time range across all non-deleted assets that are still online.
-func (r *assetRepository) getFacets(ctx context.Context) (facets, error) {
-	var f facets
+func (r *Asset) GetFacets(ctx context.Context) (Facets, error) {
+	var f Facets
 
 	if err := r.db.QueryRowContext(ctx,
 		`select count(*),
@@ -189,9 +191,9 @@ func (r *assetRepository) getFacets(ctx context.Context) (facets, error) {
 	return f, nil
 }
 
-// liveFileForChecksum returns a reachable file path holding the asset with
+// LiveFileForChecksum returns a reachable file path holding the asset with
 // the given checksum, preferring a match with the exact path prefix.
-func (r *assetRepository) liveFileForChecksum(ctx context.Context, checksum []byte) (string, string, error) {
+func (r *Asset) LiveFileForChecksum(ctx context.Context, checksum []byte) (string, string, error) {
 	var path, mimeType string
 	err := r.db.QueryRowContext(ctx,
 		`select f.path, coalesce(a.mime_type, '')
@@ -209,11 +211,11 @@ func (r *assetRepository) liveFileForChecksum(ctx context.Context, checksum []by
 	return path, mimeType, nil
 }
 
-// query returns the assets matching the filters, newest capture time first,
+// Query returns the assets matching the filters, newest capture time first,
 // with stable keyset pagination on (capture time, id). The capture time is
 // the wall-clock local date when known, otherwise the UTC instant. Assets
 // without a single online file are left out.
-func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, error) {
+func (r *Asset) Query(ctx context.Context, q AssetQuery) ([]entity.Asset, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 100
@@ -293,10 +295,10 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 	}
 	defer rows.Close()
 
-	assets := []Asset{}
+	assets := []entity.Asset{}
 	for rows.Next() {
 		var (
-			a                                      Asset
+			a                                      entity.Asset
 			mimeType                               sql.NullString
 			dateTimeLocal, dateTime                sql.NullInt64
 			timeZone, city, country                sql.NullString

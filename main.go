@@ -13,8 +13,12 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	exiftoolbin "github.com/vigovlugt/imchlite/exiftool"
-	"github.com/vigovlugt/imchlite/ffmpeg"
+	"github.com/vigovlugt/imchlite/internal/api"
+	"github.com/vigovlugt/imchlite/internal/database"
+	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
+	"github.com/vigovlugt/imchlite/internal/ffmpeg"
+	"github.com/vigovlugt/imchlite/internal/library"
+	"github.com/vigovlugt/imchlite/internal/repository"
 )
 
 func main() {
@@ -57,22 +61,22 @@ func main() {
 		log.Fatalf("start ffmpeg: %v", err)
 	}
 
-	db, err := openDatabase(libraryLocation)
+	db, err := database.Open(libraryLocation)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
 	defer db.Close()
 
-	err = initMigrations(ctx, db)
+	err = database.Migrate(ctx, db)
 	if err != nil {
 		log.Fatalf("init migrations: %v", err)
 	}
 
-	fileRepo := NewFileRepository(db)
-	assetRepo := NewAssetRepository(db)
-	processor := newProcessor(ctx, libraryLocation, f, fileRepo, assetRepo)
-	queue := newAssetQueue()
-	state := newIndexerState()
+	fileRepo := repository.NewFileRepository(db)
+	assetRepo := repository.NewAsset(db)
+	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo)
+	queue := library.NewAssetQueue()
+	state := library.NewIndexerState()
 
 	var wg sync.WaitGroup
 	for range *workers {
@@ -83,14 +87,14 @@ func main() {
 		defer et.Close()
 
 		wg.Go(func() {
-			processor.worker(et, queue, state)
+			processor.Worker(et, queue, state)
 		})
 	}
 
 	var indexWG sync.WaitGroup
 	indexWG.Go(func() {
 		log.Printf("indexing library %s", libraryLocation)
-		if err := indexLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
+		if err := library.IndexLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
 			log.Printf("indexing failed: %v", err)
 		} else {
 			log.Printf("indexing completed")
@@ -98,8 +102,8 @@ func main() {
 		queue.Close()
 	})
 
-	srv := newServer(*addr, state, assetRepo, libraryLocation)
-	if err := runServer(ctx, srv); err != nil {
+	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, frontendHandler())
+	if err := api.RunServer(ctx, srv); err != nil {
 		log.Printf("serve: %v", err)
 		return
 	}

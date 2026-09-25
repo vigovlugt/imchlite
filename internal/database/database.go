@@ -1,4 +1,4 @@
-package main
+package database
 
 import (
 	"database/sql"
@@ -9,7 +9,9 @@ import (
 	"strings"
 )
 
-func openDatabase(libraryLocation string) (*sql.DB, error) {
+// Open opens (creating if needed) the SQLite database under the library's
+// .imchlite directory.
+func Open(libraryLocation string) (*sql.DB, error) {
 	dir := filepath.Join(libraryLocation, ".imchlite")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create library dir: %w", err)
@@ -34,9 +36,9 @@ func openDatabase(libraryLocation string) (*sql.DB, error) {
 
 	dsn := (&url.URL{
 		Scheme: "file",
-		// Using 'Path' guarantees automatic URL escaping for characters 
+		// Using 'Path' guarantees automatic URL escaping for characters
 		// like '#' or '?' so they aren't misread by SQLite.
-		Path:     uriPath, 
+		Path:     uriPath,
 		RawQuery: "_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&_synchronous=NORMAL",
 	}).String()
 

@@ -1,39 +1,25 @@
-package main
+package media
 
 import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/vigovlugt/imchlite/internal/entity"
 )
 
-// AssetType: 0 = image, 1 = video
-type AssetType int
-
-const (
-	AssetTypeImage AssetType = 0
-	AssetTypeVideo AssetType = 1
-)
-
-// ThumbnailStatus: 0 = ok, 1 = failed
-type ThumbnailStatus int
-
-const (
-	ThumbnailStatusOK     ThumbnailStatus = 0
-	ThumbnailStatusFailed ThumbnailStatus = 1
-)
-
-// resolveLibraryPath resolves a path stored relative to the library root for
+// ResolveLibraryPath resolves a path stored relative to the library root for
 // filesystem access. Stored paths always use forward slashes; this is the
 // single conversion point back to OS-native separators. Keeping this
 // conversion at I/O boundaries makes a library movable without invalidating
 // paths persisted in its database.
-func resolveLibraryPath(libraryLocation, relativePath string) string {
+func ResolveLibraryPath(libraryLocation, relativePath string) string {
 	return filepath.FromSlash(filepath.Join(libraryLocation, relativePath))
 }
 
-// toSlashPaths normalizes user-supplied path filter values to forward slashes
+// ToSlashPaths normalizes user-supplied path filter values to forward slashes
 // so they match the separator used for paths persisted in the database.
-func toSlashPaths(paths []string) []string {
+func ToSlashPaths(paths []string) []string {
 	if paths == nil {
 		return nil
 	}
@@ -64,7 +50,7 @@ var videoExtensions = map[string]struct{}{
 	".webm": {}, ".wmv": {},
 }
 
-func lowerExtension(p string) (string, bool) {
+func LowerExtension(p string) (string, bool) {
 	ext := path.Ext(p)
 	if ext == "" {
 		return "", false
@@ -72,10 +58,10 @@ func lowerExtension(p string) (string, bool) {
 	return strings.ToLower(ext), true
 }
 
-// isMediaPath reports whether a path looks like a supported photo or video
+// IsMediaPath reports whether a path looks like a supported photo or video
 // file from its extension.
-func isMediaPath(p string) bool {
-	ext, ok := lowerExtension(p)
+func IsMediaPath(p string) bool {
+	ext, ok := LowerExtension(p)
 	if !ok {
 		return false
 	}
@@ -84,15 +70,15 @@ func isMediaPath(p string) bool {
 	return isImage || isVideo
 }
 
-// typeFromPath classifies a media file as image or video from its extension.
+// TypeFromPath classifies a media file as image or video from its extension.
 // Content-sniffing is a later concern; the extension is enough for the initial
 // asset row.
-func typeFromPath(p string) AssetType {
-	ext, ok := lowerExtension(p)
+func TypeFromPath(p string) entity.AssetType {
+	ext, ok := LowerExtension(p)
 	if ok {
 		if _, isVideo := videoExtensions[ext]; isVideo {
-			return AssetTypeVideo
+			return entity.AssetTypeVideo
 		}
 	}
-	return AssetTypeImage
+	return entity.AssetTypeImage
 }

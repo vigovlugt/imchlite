@@ -1,4 +1,4 @@
-package main
+package database
 
 import (
 	"context"
@@ -91,8 +91,8 @@ func migration001(tx *sql.Tx) error {
 	return nil
 }
 
-// initMigrations runs any pending migrations on the database.
-func initMigrations(ctx context.Context, db *sql.DB) error {
+// Migrate runs any pending migrations on the database.
+func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := ensureSchemaVersionTable(ctx, db); err != nil {
 		return err
 	}

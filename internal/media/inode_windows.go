@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package media
 
 import (
 	"io/fs"
@@ -8,12 +8,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// fileInode returns the file ID of a directory entry. Windows' FileInfo.Sys
+// FileInode returns the file ID of a directory entry. Windows' FileInfo.Sys
 // holds a *syscall.Win32FileAttributeData, which carries no file index, so
 // the ID has to be retrieved through the file handle. NTFS assigns IDs that
 // behave like inodes for deduplication purposes; FAT has no stable file IDs
 // and returns 0.
-func fileInode(d fs.DirEntry, path string) (int64, error) {
+func FileInode(d fs.DirEntry, path string) (int64, error) {
 	pathUTF16, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return 0, err

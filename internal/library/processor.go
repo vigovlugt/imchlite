@@ -1,4 +1,4 @@
-package main
+package library
 
 import (
 	"bytes"
@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"time"
 
-	exiftoolbin "github.com/vigovlugt/imchlite/exiftool"
-	"github.com/vigovlugt/imchlite/ffmpeg"
-	"github.com/vigovlugt/imchlite/queue"
+	"github.com/vigovlugt/imchlite/internal/entity"
+	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
+	"github.com/vigovlugt/imchlite/internal/ffmpeg"
+	"github.com/vigovlugt/imchlite/internal/media"
+	"github.com/vigovlugt/imchlite/internal/queue"
+	"github.com/vigovlugt/imchlite/internal/repository"
 )
 
 type assetTask struct {
@@ -21,7 +24,8 @@ type assetTask struct {
 	Path   string
 }
 
-func newAssetQueue() *queue.Queue[assetTask] {
+// NewAssetQueue creates the queue the indexer feeds and the workers drain.
+func NewAssetQueue() *queue.Queue[assetTask] {
 	return queue.New[assetTask]()
 }
 
@@ -46,13 +50,13 @@ type processor struct {
 	ctx             context.Context
 	libraryLocation string
 	ffmpeg          *ffmpeg.FFmpeg
-	files           *fileRepository
-	assets          *assetRepository
+	files           *repository.File
+	assets          *repository.Asset
 }
 
-// newProcessor creates a processor sharing the given repositories and
+// NewProcessor creates a processor sharing the given repositories and
 // extracted ffmpeg binary.
-func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *fileRepository, assets *assetRepository) *processor {
+func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset) *processor {
 	return &processor{
 		ctx:             ctx,
 		libraryLocation: libraryLocation,
@@ -62,9 +66,9 @@ func newProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg
 	}
 }
 
-// worker consumes asset tasks from the queue until it is closed. Each worker
+// Worker consumes asset tasks from the queue until it is closed. Each worker
 // runs its own exiftool process.
-func (p *processor) worker(et *exiftoolbin.Exiftool, queue *queue.Queue[assetTask], state *indexerState) {
+func (p *processor) Worker(et *exiftoolbin.Exiftool, queue *queue.Queue[assetTask], state *IndexerState) {
 	for {
 		task, ok := queue.Pop()
 		if !ok {
@@ -102,7 +106,7 @@ type processTimings struct {
 func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 	started := time.Now()
 
-	absolutePath := resolveLibraryPath(p.libraryLocation, task.Path)
+	absolutePath := media.ResolveLibraryPath(p.libraryLocation, task.Path)
 
 	info, err := os.Stat(absolutePath)
 	if err != nil {
@@ -115,7 +119,7 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 	// bytes feed both the checksum and the thumbnail generation, halving
 	// disk I/O for the common case.
 	var data []byte
-	if ext, ok := lowerExtension(task.Path); ok {
+	if ext, ok := media.LowerExtension(task.Path); ok {
 		if _, pipeable := pipeableImageExtensions[ext]; pipeable && info.Size() <= maxInMemoryImageSize {
 			readStart := time.Now()
 			if data, err = os.ReadFile(absolutePath); err != nil {
@@ -139,7 +143,7 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 	}
 
 	dbStart := time.Now()
-	asset, err := p.assets.getByChecksum(p.ctx, checksum)
+	asset, err := p.assets.GetByChecksum(p.ctx, checksum)
 	timings.dbMs += time.Since(dbStart).Milliseconds()
 	if err != nil {
 		return fmt.Errorf("lookup asset by checksum: %w", err)
@@ -152,7 +156,7 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 	}
 
 	dbStart = time.Now()
-	if err := p.files.linkAsset(p.ctx, task.FileID, asset.ID); err != nil {
+	if err := p.files.LinkAsset(p.ctx, task.FileID, asset.ID); err != nil {
 		return fmt.Errorf("link file %d to asset %d: %w", task.FileID, asset.ID, err)
 	}
 	timings.dbMs += time.Since(dbStart).Milliseconds()
@@ -170,7 +174,7 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 // its asset row. A concurrent worker may have stored the same content first;
 // the asset is re-fetched by checksum so the row with the canonical id is
 // returned.
-func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, data []byte, timings processTimings) (*Asset, processTimings, error) {
+func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, data []byte, timings processTimings) (*entity.Asset, processTimings, error) {
 	metadataStart := time.Now()
 	meta, err := et.ProbeMetadata(absolutePath)
 	timings.metadataMs = time.Since(metadataStart).Milliseconds()
@@ -184,10 +188,10 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 	}
 
 	mtime := info.ModTime().Unix()
-	asset := &Asset{
+	asset := &entity.Asset{
 		Checksum:       checksum,
 		MimeType:       mimeType,
-		Type:           typeFromPath(task.Path),
+		Type:           media.TypeFromPath(task.Path),
 		FileCreatedAt:  mtime,
 		FileModifiedAt: mtime,
 		LocalDateTime:  meta.LocalTakenAt,
@@ -215,16 +219,16 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 	thumbStart := time.Now()
 	if err := p.createThumbnail(checksum, absolutePath, data); err != nil {
 		log.Printf("thumbnail for %s: %v", task.Path, err)
-		asset.ThumbnailStatus = ThumbnailStatusFailed
+		asset.ThumbnailStatus = entity.ThumbnailStatusFailed
 	}
 	timings.thumbMs = time.Since(thumbStart).Milliseconds()
 
 	insertStart := time.Now()
-	if err := p.assets.insert(p.ctx, asset); err != nil {
+	if err := p.assets.Insert(p.ctx, asset); err != nil {
 		return nil, timings, fmt.Errorf("store asset for %s: %w", task.Path, err)
 	}
 
-	stored, err := p.assets.getByChecksum(p.ctx, checksum)
+	stored, err := p.assets.GetByChecksum(p.ctx, checksum)
 	if err != nil {
 		timings.dbMs += time.Since(insertStart).Milliseconds()
 		return nil, timings, fmt.Errorf("lookup asset by checksum: %w", err)
@@ -266,7 +270,7 @@ func fileChecksum(path string) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
-func applyCityCountry(asset *Asset, exiftool *exiftoolbin.Exiftool) error {
+func applyCityCountry(asset *entity.Asset, exiftool *exiftoolbin.Exiftool) error {
 	if (asset.Latitude != 0 || asset.Longitude != 0) && (asset.City == "" || asset.Country == "") {
 		city, country, err := exiftool.ReverseGeocode(asset.Latitude, asset.Longitude)
 		if err != nil {

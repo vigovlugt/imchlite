@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vigovlugt/imchlite/cachedir"
+	"github.com/vigovlugt/imchlite/internal/cachedir"
 )
 
 type Exiftool struct {

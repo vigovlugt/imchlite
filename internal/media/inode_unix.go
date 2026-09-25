@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package media
 
 import (
 	"fmt"
@@ -8,10 +8,10 @@ import (
 	"syscall"
 )
 
-// fileInode returns the inode number of a directory entry, using the stat
+// FileInode returns the inode number of a directory entry, using the stat
 // result already attached to the entry's FileInfo by the OS to avoid a second
 // stat syscall.
-func fileInode(d fs.DirEntry, path string) (int64, error) {
+func FileInode(d fs.DirEntry, path string) (int64, error) {
 	info, err := d.Info()
 	if err != nil {
 		return 0, err

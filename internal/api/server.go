@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -10,6 +10,9 @@ import (
 	"os/exec"
 	"runtime"
 	"time"
+
+	"github.com/vigovlugt/imchlite/internal/library"
+	"github.com/vigovlugt/imchlite/internal/repository"
 )
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -20,7 +23,9 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	}
 }
 
-func newServer(addr string, state *indexerState, assets *assetRepository, libraryLocation string) *http.Server {
+// NewServer builds the http server exposing the api and the embedded
+// frontend.
+func NewServer(addr string, state *library.IndexerState, assets *repository.Asset, libraryLocation string, frontend http.Handler) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -28,12 +33,12 @@ func newServer(addr string, state *indexerState, assets *assetRepository, librar
 	})
 
 	mux.HandleFunc("GET /api/index/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, state.status())
+		writeJSON(w, http.StatusOK, state.Status())
 	})
 
 	registerAssetRoutes(mux, assets, libraryLocation)
 
-	mux.Handle("GET /", frontendHandler())
+	mux.Handle("GET /", frontend)
 
 	return &http.Server{
 		Addr:              addr,
@@ -58,7 +63,8 @@ func openBrowser(url string) {
 	}
 }
 
-func runServer(ctx context.Context, srv *http.Server) error {
+// RunServer serves until the context is canceled, then shuts down gracefully.
+func RunServer(ctx context.Context, srv *http.Server) error {
 	log.Printf("api server listening on %s", srv.Addr)
 
 	listener, err := net.Listen("tcp", srv.Addr)

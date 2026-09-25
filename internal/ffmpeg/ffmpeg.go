@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"strconv"
 
-	"github.com/vigovlugt/imchlite/cachedir"
+	"github.com/vigovlugt/imchlite/internal/cachedir"
 )
 
 type FFmpeg struct {

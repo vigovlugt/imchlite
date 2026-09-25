@@ -1,4 +1,20 @@
-package main
+package entity
+
+// AssetType: 0 = image, 1 = video
+type AssetType int
+
+const (
+	AssetTypeImage AssetType = 0
+	AssetTypeVideo AssetType = 1
+)
+
+// ThumbnailStatus: 0 = ok, 1 = failed
+type ThumbnailStatus int
+
+const (
+	ThumbnailStatusOK     ThumbnailStatus = 0
+	ThumbnailStatusFailed ThumbnailStatus = 1
+)
 
 // Asset mirrors the asset table in migration001.
 type Asset struct {

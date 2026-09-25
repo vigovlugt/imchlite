@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"encoding/base64"
@@ -10,6 +10,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/vigovlugt/imchlite/internal/entity"
+	"github.com/vigovlugt/imchlite/internal/media"
+	"github.com/vigovlugt/imchlite/internal/repository"
 )
 
 // assetResponse is the wire format of an asset for the api.
@@ -42,14 +46,14 @@ type assetPage struct {
 	NextCursor string          `json:"nextCursor,omitempty"`
 }
 
-func assetTypeName(t AssetType) string {
-	if t == AssetTypeVideo {
+func assetTypeName(t entity.AssetType) string {
+	if t == entity.AssetTypeVideo {
 		return "video"
 	}
 	return "image"
 }
 
-func newAssetResponse(a Asset) assetResponse {
+func newAssetResponse(a entity.Asset) assetResponse {
 	checksum := fmt.Sprintf("%x", a.Checksum)
 	r := assetResponse{
 		ID:         a.ID,
@@ -100,20 +104,20 @@ func newAssetResponse(a Asset) assetResponse {
 }
 
 // encodeCursor encodes a pagination cursor for use in a url.
-func encodeCursor(c assetCursor) string {
+func encodeCursor(c repository.AssetCursor) string {
 	raw := fmt.Sprintf("%d:%d", c.Time, c.ID)
 	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
 // decodeCursor parses a cursor produced by encodeCursor.
-func decodeCursor(s string) (assetCursor, error) {
+func decodeCursor(s string) (repository.AssetCursor, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
-		return assetCursor{}, fmt.Errorf("decode cursor: %w", err)
+		return repository.AssetCursor{}, fmt.Errorf("decode cursor: %w", err)
 	}
-	var c assetCursor
+	var c repository.AssetCursor
 	if _, err := fmt.Sscanf(string(raw), "%d:%d", &c.Time, &c.ID); err != nil {
-		return assetCursor{}, fmt.Errorf("parse cursor: %w", err)
+		return repository.AssetCursor{}, fmt.Errorf("parse cursor: %w", err)
 	}
 	return c, nil
 }
@@ -121,19 +125,19 @@ func decodeCursor(s string) (assetCursor, error) {
 // parseAssetQuery reads the asset filters from query parameters. All
 // parameters are optional. include_path/exclude_path values are SQLite GLOB
 // patterns matched against each file path.
-func parseAssetQuery(vals url.Values) (assetQuery, error) {
-	q := assetQuery{
-		IncludePaths: toSlashPaths(vals["include_path"]),
-		ExcludePaths: toSlashPaths(vals["exclude_path"]),
+func parseAssetQuery(vals url.Values) (repository.AssetQuery, error) {
+	q := repository.AssetQuery{
+		IncludePaths: media.ToSlashPaths(vals["include_path"]),
+		ExcludePaths: media.ToSlashPaths(vals["exclude_path"]),
 	}
 
 	switch t := vals.Get("type"); t {
 	case "", "all":
 	case "image":
-		v := AssetTypeImage
+		v := entity.AssetTypeImage
 		q.Type = &v
 	case "video":
-		v := AssetTypeVideo
+		v := entity.AssetTypeVideo
 		q.Type = &v
 	default:
 		return q, fmt.Errorf("invalid type %q: want image, video or all", t)
@@ -198,9 +202,9 @@ func parseChecksum(s string) ([]byte, bool) {
 }
 
 // registerAssetRoutes installs the asset endpoints on the mux.
-func registerAssetRoutes(mux *http.ServeMux, assets *assetRepository, libraryLocation string) {
+func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLocation string) {
 	mux.HandleFunc("GET /api/facets", func(w http.ResponseWriter, r *http.Request) {
-		f, err := assets.getFacets(r.Context())
+		f, err := assets.GetFacets(r.Context())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -217,7 +221,7 @@ func registerAssetRoutes(mux *http.ServeMux, assets *assetRepository, libraryLoc
 			return
 		}
 
-		relativePath, mimeType, err := assets.liveFileForChecksum(r.Context(), checksum)
+		relativePath, mimeType, err := assets.LiveFileForChecksum(r.Context(), checksum)
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "asset not found"})
 			return
@@ -236,7 +240,7 @@ func registerAssetRoutes(mux *http.ServeMux, assets *assetRepository, libraryLoc
 				"filename": filepath.Base(relativePath),
 			}))
 		}
-		http.ServeFile(w, r, resolveLibraryPath(libraryLocation, relativePath))
+		http.ServeFile(w, r, media.ResolveLibraryPath(libraryLocation, relativePath))
 	})
 
 	// GET /api/thumb/{checksum} serves the generated webp thumbnail.
@@ -261,7 +265,7 @@ func registerAssetRoutes(mux *http.ServeMux, assets *assetRepository, libraryLoc
 			return
 		}
 
-		found, err := assets.query(r.Context(), q)
+		found, err := assets.Query(r.Context(), q)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -283,7 +287,7 @@ func registerAssetRoutes(mux *http.ServeMux, assets *assetRepository, libraryLoc
 		// the last asset.
 		if len(found) == limit {
 			last := found[len(found)-1]
-			page.NextCursor = encodeCursor(assetCursor{Time: last.CaptureTime(), ID: last.ID})
+			page.NextCursor = encodeCursor(repository.AssetCursor{Time: last.CaptureTime(), ID: last.ID})
 		}
 
 		writeJSON(w, http.StatusOK, page)

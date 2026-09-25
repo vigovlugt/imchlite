@@ -1,4 +1,4 @@
-package main
+package library
 
 import (
 	"encoding/csv"
@@ -10,10 +10,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vigovlugt/imchlite/internal/entity"
+	"github.com/vigovlugt/imchlite/internal/media"
 )
 
-func applySidecars(libraryLocation, mediaPath string, asset *Asset) {
-	absolutePath := resolveLibraryPath(libraryLocation, mediaPath)
+func applySidecars(libraryLocation, mediaPath string, asset *entity.Asset) {
+	absolutePath := media.ResolveLibraryPath(libraryLocation, mediaPath)
 
 	applySnapchatSidecar(absolutePath, asset)
 	applyGoogleSidecar(absolutePath, asset)
@@ -58,7 +61,7 @@ type googleSidecarInfo struct {
 	Longitude float64
 }
 
-func applyGoogleSidecar(absolutePath string, asset *Asset) {
+func applyGoogleSidecar(absolutePath string, asset *entity.Asset) {
 	dir := filepath.Dir(absolutePath)
 	info, ok := googleSidecarLookup(dir, filepath.Base(absolutePath))
 	if !ok {
@@ -152,7 +155,7 @@ func indexGoogleJSON(path string, index map[string]googleSidecarInfo) {
 	index[strings.ToLower(googleDupSuffixRe.ReplaceAllString(title, "$1$2"))] = info
 }
 
-func applyImmichSidecar(absolutePath string, asset *Asset) {
+func applyImmichSidecar(absolutePath string, asset *entity.Asset) {
 	type immichSidecarMetadata struct {
 		DateTaken string  `json:"dateTaken"`
 		Latitude  float64 `json:"latitude"`
@@ -198,7 +201,7 @@ var snapchatDateRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})_`)
 // zone; only the wall-clock day is known. It is only used as a fallback,
 // since snapchat re-encodes media with the capture time in its QuickTime
 // CreateDate.
-func applySnapchatSidecar(absolutePath string, asset *Asset) {
+func applySnapchatSidecar(absolutePath string, asset *entity.Asset) {
 	if asset.LocalDateTime != 0 || asset.DateTime != 0 {
 		return
 	}
@@ -229,7 +232,7 @@ var (
 	iCloudCSVCache = map[string]map[string]time.Time{}
 )
 
-func applyICloudSidecar(absolutePath string, asset *Asset) {
+func applyICloudSidecar(absolutePath string, asset *entity.Asset) {
 	if asset.DateTime != 0 {
 		return
 	}

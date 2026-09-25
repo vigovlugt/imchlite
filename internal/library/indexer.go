@@ -1,4 +1,4 @@
-package main
+package library
 
 import (
 	"context"
@@ -9,12 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vigovlugt/imchlite/queue"
+	"github.com/vigovlugt/imchlite/internal/entity"
+	"github.com/vigovlugt/imchlite/internal/media"
+	"github.com/vigovlugt/imchlite/internal/queue"
+	"github.com/vigovlugt/imchlite/internal/repository"
 )
 
-// indexerState tracks live progress of the background indexer so the api can
+// IndexerState tracks live progress of the background indexer so the api can
 // report on it.
-type indexerState struct {
+type IndexerState struct {
 	startedAt  time.Time
 	discovered atomic.Int64
 	processed  atomic.Int64
@@ -27,21 +30,23 @@ type indexerState struct {
 	errMsg    atomic.Pointer[string]
 }
 
-func newIndexerState() *indexerState {
-	return &indexerState{startedAt: time.Now()}
+// NewIndexerState creates a fresh, empty indexer state.
+func NewIndexerState() *IndexerState {
+	return &IndexerState{startedAt: time.Now()}
 }
 
-func (s *indexerState) complete() {
+func (s *IndexerState) complete() {
 	s.completed.Store(true)
 }
 
-func (s *indexerState) fail(err error) {
+func (s *IndexerState) fail(err error) {
 	msg := err.Error()
 	s.errMsg.Store(&msg)
 	s.failed.Store(true)
 }
 
-type indexStatus struct {
+// IndexStatus is the serializable snapshot of the indexer's progress.
+type IndexStatus struct {
 	StartedAt  time.Time `json:"startedAt"`
 	Discovered int64     `json:"discovered"`
 	Processed  int64     `json:"processed"`
@@ -53,8 +58,9 @@ type indexStatus struct {
 	Error      string    `json:"error,omitempty"`
 }
 
-func (s *indexerState) status() indexStatus {
-	status := indexStatus{
+// Status returns the current progress snapshot.
+func (s *IndexerState) Status() IndexStatus {
+	status := IndexStatus{
 		StartedAt:  s.startedAt,
 		Discovered: s.discovered.Load(),
 		Processed:  s.processed.Load(),
@@ -98,13 +104,13 @@ type statInfo struct {
 	mtimeNs int64
 }
 
-func fileStat(f File) statInfo {
+func fileStat(f entity.File) statInfo {
 	return statInfo{inode: f.Inode, size: f.Size, mtimeS: f.MtimeS, mtimeNs: f.MtimeNs}
 }
 
-// indexLibrary walks the library and records the run's outcome in the given
+// IndexLibrary walks the library and records the run's outcome in the given
 // indexer state.
-func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, queue *queue.Queue[assetTask], state *indexerState) error {
+func IndexLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[assetTask], state *IndexerState) error {
 	if err := walkLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
 		state.fail(err)
 		return err
@@ -113,14 +119,14 @@ func indexLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRep
 	return nil
 }
 
-func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepository, queue *queue.Queue[assetTask], state *indexerState) error {
-	existingFiles, err := fileRepo.getAll(ctx)
+func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[assetTask], state *IndexerState) error {
+	existingFiles, err := fileRepo.GetAll(ctx)
 	if err != nil {
 		return fmt.Errorf("snapshot files: %w", err)
 	}
 
-	fileByPath := make(map[string]File, len(existingFiles))
-	fileByInode := make(map[int64]File, len(existingFiles))
+	fileByPath := make(map[string]entity.File, len(existingFiles))
+	fileByInode := make(map[int64]entity.File, len(existingFiles))
 	for _, file := range existingFiles {
 		fileByPath[file.Path] = file
 		fileByInode[file.Inode] = file
@@ -152,7 +158,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 			return nil
 		}
 
-		if !isMediaPath(path) {
+		if !media.IsMediaPath(path) {
 			return nil
 		}
 
@@ -169,14 +175,14 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 			return fmt.Errorf("relativize %s: %w", path, err)
 		}
 		// Paths are stored and keyed with forward slashes on every platform;
-		// resolveLibraryPath converts back to OS-native form at I/O boundaries.
+		// ResolveLibraryPath converts back to OS-native form at I/O boundaries.
 		relativePath = filepath.ToSlash(relativePath)
 		seenPaths[relativePath] = struct{}{}
 
 		mtime := info.ModTime()
 		stat := statInfo{size: info.Size(), mtimeS: mtime.Unix(), mtimeNs: int64(mtime.Nanosecond())}
 
-		inode, err := fileInode(d, path)
+		inode, err := media.FileInode(d, path)
 		if err != nil {
 			log.Printf("indexer: inode lookup failed for %s: %v", path, err)
 			return nil
@@ -201,7 +207,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 			assetID = known.AssetID
 		}
 
-		knownFile := NewFile{
+		knownFile := repository.NewFile{
 			AssetID:   assetID,
 			Path:      relativePath,
 			Inode:     inode,
@@ -210,7 +216,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 			MtimeNs:   stat.mtimeNs,
 			IsOffline: false,
 		}
-		fileID, err := fileRepo.upsert(ctx, knownFile)
+		fileID, err := fileRepo.Upsert(ctx, knownFile)
 		if err != nil {
 			return fmt.Errorf("upsert %s: %w", relativePath, err)
 		}
@@ -242,7 +248,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *fileRepo
 		}
 	}
 
-	if err := fileRepo.markOffline(ctx, offlineFiles); err != nil {
+	if err := fileRepo.MarkOffline(ctx, offlineFiles); err != nil {
 		return fmt.Errorf("mark offline files: %w", err)
 	}
 	if len(offlineFiles) > 0 {

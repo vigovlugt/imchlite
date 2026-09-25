@@ -1,19 +1,18 @@
-package main
+package repository
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/vigovlugt/imchlite/internal/entity"
 )
 
-// fileRepository owns the database pool for file persistence.
-type fileRepository struct {
+// File owns the database pool for file persistence.
+type File struct {
 	db *sql.DB
 }
-
-// IndexState is a file's persisted state as seen by the indexer.
-type IndexState = File
 
 // NewFile is the payload for inserting or updating a file row.
 type NewFile struct {
@@ -26,13 +25,13 @@ type NewFile struct {
 	IsOffline bool
 }
 
-// NewFileRepository creates a fileRepository backed by the given pool.
-func NewFileRepository(db *sql.DB) *fileRepository {
-	return &fileRepository{db: db}
+// NewFileRepository creates a FileRepository backed by the given pool.
+func NewFileRepository(db *sql.DB) *File {
+	return &File{db: db}
 }
 
-// getAll returns all files.
-func (r *fileRepository) getAll(ctx context.Context) ([]File, error) {
+// GetAll returns all files.
+func (r *File) GetAll(ctx context.Context) ([]entity.File, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`select id, asset_id, path, inode, size, mtime_s, mtime_ns, is_offline, created_at, updated_at from files`)
 	if err != nil {
@@ -40,9 +39,9 @@ func (r *fileRepository) getAll(ctx context.Context) ([]File, error) {
 	}
 	defer rows.Close()
 
-	files := []File{}
+	files := []entity.File{}
 	for rows.Next() {
-		var f File
+		var f entity.File
 		if err := rows.Scan(
 			&f.ID, &f.AssetID, &f.Path, &f.Inode, &f.Size, &f.MtimeS,
 			&f.MtimeNs, &f.IsOffline, &f.CreatedAt, &f.UpdatedAt,
@@ -57,9 +56,9 @@ func (r *fileRepository) getAll(ctx context.Context) ([]File, error) {
 	return files, nil
 }
 
-// markOffline flags the given file ids as no longer reachable on disk.
+// MarkOffline flags the given file ids as no longer reachable on disk.
 // Ids are applied in chunks to stay under SQLite's bound-parameter limit.
-func (r *fileRepository) markOffline(ctx context.Context, ids []int64) error {
+func (r *File) MarkOffline(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -88,8 +87,8 @@ func (r *fileRepository) markOffline(ctx context.Context, ids []int64) error {
 	return nil
 }
 
-// insert adds a new file row.
-func (r *fileRepository) insert(ctx context.Context, f NewFile) (int64, error) {
+// Insert adds a new file row.
+func (r *File) Insert(ctx context.Context, f NewFile) (int64, error) {
 	res, err := r.db.ExecContext(ctx,
 		`insert into files (asset_id, path, inode, size, mtime_s, mtime_ns, is_offline)
 		 values (?, ?, ?, ?, ?, ?, ?)`,
@@ -104,9 +103,9 @@ func (r *fileRepository) insert(ctx context.Context, f NewFile) (int64, error) {
 	return id, nil
 }
 
-// upsert inserts a file row, or replaces its filesystem identity and asset
+// Upsert inserts a file row, or replaces its filesystem identity and asset
 // link if a row already exists for the path. Returns the row id.
-func (r *fileRepository) upsert(ctx context.Context, f NewFile) (int64, error) {
+func (r *File) Upsert(ctx context.Context, f NewFile) (int64, error) {
 	res, err := r.db.ExecContext(ctx,
 		`insert into files (asset_id, path, inode, size, mtime_s, mtime_ns, is_offline)
 		 values (?, ?, ?, ?, ?, ?, ?)
@@ -125,8 +124,8 @@ func (r *fileRepository) upsert(ctx context.Context, f NewFile) (int64, error) {
 	return res.LastInsertId()
 }
 
-// linkAsset attaches an asset to a file row.
-func (r *fileRepository) linkAsset(ctx context.Context, id, assetID int64) error {
+// LinkAsset attaches an asset to a file row.
+func (r *File) LinkAsset(ctx context.Context, id, assetID int64) error {
 	if _, err := r.db.ExecContext(ctx,
 		`update files set asset_id = ?, updated_at = unixepoch() where id = ?`,
 		assetID, id); err != nil {
@@ -135,9 +134,9 @@ func (r *fileRepository) linkAsset(ctx context.Context, id, assetID int64) error
 	return nil
 }
 
-// updateStat replaces the filesystem identity of an existing file row, keeping
+// UpdateStat replaces the filesystem identity of an existing file row, keeping
 // its asset link intact.
-func (r *fileRepository) updateStat(ctx context.Context, id int64, f NewFile) error {
+func (r *File) UpdateStat(ctx context.Context, id int64, f NewFile) error {
 	if _, err := r.db.ExecContext(ctx,
 		`update files set asset_id = ?, path = ?, inode = ?, size = ?, mtime_s = ?, mtime_ns = ?,
 		        updated_at = unixepoch()
