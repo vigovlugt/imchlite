@@ -244,10 +244,14 @@ func (r *assetRepository) query(ctx context.Context, q assetQuery) ([]Asset, err
 		conds = append(conds, "coalesce(a.date_time_local, a.date_time) <= ?")
 		args = append(args, *q.Until)
 	}
-	for _, p := range q.IncludePaths {
+	if len(q.IncludePaths) > 0 {
+		parts := make([]string, len(q.IncludePaths))
+		for i, p := range q.IncludePaths {
+			parts[i] = "f.path glob ?"
+			args = append(args, p)
+		}
 		conds = append(conds,
-			"exists (select 1 from files f where f.asset_id = a.id and f.path glob ?)")
-		args = append(args, p)
+			"exists (select 1 from files f where f.asset_id = a.id and ("+strings.Join(parts, " or ")+"))")
 	}
 	for _, p := range q.ExcludePaths {
 		conds = append(conds,
