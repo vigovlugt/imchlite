@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -20,6 +18,7 @@ import (
 	"github.com/vigovlugt/imchlite/internal/media"
 	"github.com/vigovlugt/imchlite/internal/queue"
 	"github.com/vigovlugt/imchlite/internal/repository"
+	"github.com/vigovlugt/imchlite/internal/utils"
 )
 
 type assetTask struct {
@@ -221,7 +220,7 @@ func (p *processor) processClip(task clipTask) error {
 		return fmt.Errorf("embed thumbnail: %w", err)
 	}
 
-	if err := p.assets.InsertClipEmbedding(p.ctx, task.AssetID, encodeEmbedding(embedding)); err != nil {
+	if err := p.assets.InsertClipEmbedding(p.ctx, task.AssetID, utils.EncodeEmbedding(embedding)); err != nil {
 		return err
 	}
 
@@ -232,16 +231,6 @@ func (p *processor) processClip(task clipTask) error {
 		timings.DecodeMs, timings.TransformMs, timings.InferenceMs,
 	)
 	return nil
-}
-
-// encodeEmbedding packs a float32 vector as a little-endian byte blob for
-// the asset_clip_embeddings table.
-func encodeEmbedding(embedding []float32) []byte {
-	blob := make([]byte, 4*len(embedding))
-	for i, v := range embedding {
-		binary.LittleEndian.PutUint32(blob[4*i:], math.Float32bits(v))
-	}
-	return blob
 }
 
 // EnqueuePendingClipTasks re-adds clip tasks for assets that were indexed

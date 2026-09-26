@@ -11,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/entity"
 	"github.com/vigovlugt/imchlite/internal/media"
 	"github.com/vigovlugt/imchlite/internal/repository"
+	"github.com/vigovlugt/imchlite/internal/utils"
 )
 
 // assetResponse is the wire format of an asset for the api.
@@ -122,10 +124,39 @@ func decodeCursor(s string) (repository.AssetCursor, error) {
 	return c, nil
 }
 
+// encodeSimilarCursor encodes the keyset position of a similarity page: the
+// cosine distance and id of its last asset.
+func encodeSimilarCursor(c repository.SimilarCursor) string {
+	raw := strconv.FormatFloat(c.Distance, 'g', -1, 64) + ":" + strconv.FormatInt(c.ID, 10)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeSimilarCursor parses a cursor produced by encodeSimilarCursor.
+func decodeSimilarCursor(s string) (repository.SimilarCursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return repository.SimilarCursor{}, fmt.Errorf("decode cursor: %w", err)
+	}
+	distanceStr, idStr, ok := strings.Cut(string(raw), ":")
+	if !ok {
+		return repository.SimilarCursor{}, fmt.Errorf("parse cursor %q", s)
+	}
+	distance, err := strconv.ParseFloat(distanceStr, 64)
+	if err != nil {
+		return repository.SimilarCursor{}, fmt.Errorf("parse cursor distance: %w", err)
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return repository.SimilarCursor{}, fmt.Errorf("parse cursor id: %w", err)
+	}
+	return repository.SimilarCursor{Distance: distance, ID: id}, nil
+}
+
 // parseAssetQuery reads the asset filters from query parameters. All
 // parameters are optional. include_path/exclude_path values are SQLite GLOB
-// patterns matched against each file path.
-func parseAssetQuery(vals url.Values) (repository.AssetQuery, error) {
+// patterns matched against each file path. When similarity is set the cursor
+// is decoded as a similarity position rather than a capture-time one.
+func parseAssetQuery(vals url.Values, similarity bool) (repository.AssetQuery, error) {
 	q := repository.AssetQuery{
 		IncludePaths: media.ToSlashPaths(vals["include_path"]),
 		ExcludePaths: media.ToSlashPaths(vals["exclude_path"]),
@@ -179,11 +210,19 @@ func parseAssetQuery(vals url.Values) (repository.AssetQuery, error) {
 	}
 
 	if s := vals.Get("cursor"); s != "" {
-		cursor, err := decodeCursor(s)
-		if err != nil {
-			return q, err
+		if similarity {
+			cursor, err := decodeSimilarCursor(s)
+			if err != nil {
+				return q, err
+			}
+			q.SimilarCursor = &cursor
+		} else {
+			cursor, err := decodeCursor(s)
+			if err != nil {
+				return q, err
+			}
+			q.Cursor = &cursor
 		}
-		q.Cursor = &cursor
 	}
 
 	return q, nil
@@ -202,7 +241,7 @@ func parseChecksum(s string) ([]byte, bool) {
 }
 
 // registerAssetRoutes installs the asset endpoints on the mux.
-func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLocation string) {
+func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLocation string, textual *ai.ClipTextual) {
 	mux.HandleFunc("GET /api/facets", func(w http.ResponseWriter, r *http.Request) {
 		f, err := assets.GetFacets(r.Context())
 		if err != nil {
@@ -259,15 +298,11 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLo
 	})
 
 	mux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
-		q, err := parseAssetQuery(r.URL.Query())
+		vals := r.URL.Query()
+		contextQuery := strings.TrimSpace(vals.Get("context_query"))
+		q, err := parseAssetQuery(vals, contextQuery != "")
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-
-		found, err := assets.Query(r.Context(), q)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 
@@ -276,6 +311,46 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLo
 			limit = 100
 		} else if limit > 1000 {
 			limit = 1000
+		}
+
+		// context_query ranks assets by clip similarity to a text query
+		// instead of filtering them by date.
+		if contextQuery != "" {
+			if textual == nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "text search unavailable"})
+				return
+			}
+			embedding, err := textual.Embed(r.Context(), contextQuery)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			found, err := assets.QuerySimilar(r.Context(), utils.EncodeEmbedding(embedding), q)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			page := assetPage{Assets: make([]assetResponse, 0, len(found))}
+			for _, a := range found {
+				page.Assets = append(page.Assets, newAssetResponse(a.Asset))
+			}
+			// A full page may have more neighbors; hand back a cursor
+			// positioned on the last one.
+			if len(found) == limit {
+				last := found[len(found)-1]
+				page.NextCursor = encodeSimilarCursor(repository.SimilarCursor{
+					Distance: last.Distance,
+					ID:       last.Asset.ID,
+				})
+			}
+			writeJSON(w, http.StatusOK, page)
+			return
+		}
+
+		found, err := assets.Query(r.Context(), q)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
 		}
 
 		page := assetPage{Assets: make([]assetResponse, 0, len(found))}

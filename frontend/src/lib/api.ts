@@ -43,6 +43,8 @@ export interface AssetFilters {
   excludePaths: string[]
   from?: number
   until?: number
+  /** ranks by clip similarity to this text query instead of filtering by date */
+  contextQuery?: string
 }
 
 export function thumbUrl(checksum: string): string {
@@ -103,6 +105,7 @@ function filtersToParams(f: AssetFilters, cursor?: string): string {
   for (const p of f.excludePaths) params.append('exclude_path', p)
   if (f.from !== undefined) params.set('from', String(f.from))
   if (f.until !== undefined) params.set('until', String(f.until))
+  if (f.contextQuery) params.set('context_query', f.contextQuery)
   params.set('limit', '200')
   if (cursor) params.set('cursor', cursor)
   return params.toString()

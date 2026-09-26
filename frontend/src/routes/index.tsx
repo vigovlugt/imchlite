@@ -62,6 +62,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 interface AssetSearch {
+  context_query?: string;
   type?: "image" | "video";
   city?: string;
   country?: string;
@@ -73,6 +74,8 @@ interface AssetSearch {
 
 function parseSearch(search: Record<string, unknown>): AssetSearch {
   const s: AssetSearch = {};
+  if (typeof search.context_query === "string" && search.context_query)
+    s.context_query = search.context_query;
   if (search.type === "image" || search.type === "video") s.type = search.type;
   if (typeof search.city === "string" && search.city) s.city = search.city;
   if (typeof search.country === "string" && search.country)
@@ -102,6 +105,7 @@ function filtersFromSearch(search: AssetSearch): AssetFilters {
     excludePaths: search.exclude ? search.exclude.split(",") : [],
     from: search.from,
     until: search.until,
+    contextQuery: search.context_query,
   };
 }
 
@@ -229,6 +233,7 @@ function Home() {
   );
 
   const hasFilters =
+    search.context_query !== undefined ||
     filters.type !== undefined ||
     filters.city !== undefined ||
     filters.country !== undefined ||
@@ -236,6 +241,8 @@ function Home() {
     filters.excludePaths.length > 0 ||
     filters.from !== undefined ||
     filters.until !== undefined;
+
+  const similarityMode = search.context_query !== undefined;
 
   return (
     <SidebarProvider>
@@ -249,7 +256,11 @@ function Home() {
       <SidebarInset>
         <header className="flex items-center gap-3 px-6 py-3">
           <SidebarTrigger />
-          <h1 className="text-lg font-semibold">Timeline</h1>
+          <h1 className="text-lg font-semibold">
+            {similarityMode
+              ? `Similar to “${search.context_query}”`
+              : "Timeline"}
+          </h1>
           {assetsQuery.isPending ? (
             <Spinner className="text-muted-foreground" />
           ) : null}
@@ -276,11 +287,25 @@ function Home() {
                 </EmptyMedia>
                 <EmptyTitle>No assets found</EmptyTitle>
                 <EmptyDescription>
-                  Nothing matches the current filters. Try adjusting or clearing
-                  them.
+                  {similarityMode
+                    ? "No assets match this search. Try a different query."
+                    : "Nothing matches the current filters. Try adjusting or clearing them."}
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
+          ) : similarityMode ? (
+            <div className="px-6 pb-10">
+              <div className="grid gap-0.5 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
+                {assets.map((asset, index) => (
+                  <AssetCell
+                    key={asset.id}
+                    asset={asset}
+                    onClick={() => setLightboxIndex(index)}
+                  />
+                ))}
+              </div>
+              <div ref={sentinelRef} className="h-4" />
+            </div>
           ) : (
             <div className="space-y-10 pb-10">
               {days.map((day) => (
@@ -586,6 +611,7 @@ function AppSidebar({
 
   const clearAll = () =>
     setFilters({
+      context_query: undefined,
       type: undefined,
       city: undefined,
       country: undefined,
@@ -760,6 +786,16 @@ function AppSidebar({
             {facets.totalCount} assets in library
           </p>
         )}
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Search</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SearchInput
+              value={search.context_query ?? ""}
+              onCommit={(v) => setFilters({ context_query: v || undefined })}
+            />
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
 
       <SidebarFooter>
@@ -767,6 +803,38 @@ function AppSidebar({
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>
+  );
+}
+
+function SearchInput({
+  value,
+  onCommit,
+}: {
+  value: string;
+  onCommit: (value: string) => void;
+}) {
+  const [text, setText] = useState(value);
+  useEffect(() => {
+    setText(value);
+  }, [value]);
+
+  const commit = () => onCommit(text.trim());
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        commit();
+      }}
+    >
+      <Input
+        type="search"
+        placeholder="Describe what to find…"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+      />
+    </form>
   );
 }
 

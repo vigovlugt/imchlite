@@ -142,7 +142,7 @@ func main() {
 		}
 	})
 
-	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, frontendHandler())
+	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, textual, frontendHandler())
 	if err := api.RunServer(ctx, srv); err != nil {
 		log.Printf("serve: %v", err)
 		return
