@@ -110,7 +110,7 @@ func fileStat(f entity.File) statInfo {
 
 // IndexLibrary walks the library and records the run's outcome in the given
 // indexer state.
-func IndexLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[assetTask], state *IndexerState) error {
+func IndexLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
 	if err := walkLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
 		state.fail(err)
 		return err
@@ -119,7 +119,7 @@ func IndexLibrary(ctx context.Context, libraryLocation string, fileRepo *reposit
 	return nil
 }
 
-func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[assetTask], state *IndexerState) error {
+func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
 	existingFiles, err := fileRepo.GetAll(ctx)
 	if err != nil {
 		return fmt.Errorf("snapshot files: %w", err)

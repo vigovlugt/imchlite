@@ -78,15 +78,13 @@ func TestCloseDrainsThenReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestPushAfterClosePanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("Push after Close did not panic")
-		}
-	}()
+func TestPushAfterCloseIsNoop(t *testing.T) {
 	q := New[int]()
 	q.Close()
 	q.Push(1, 0)
+	if q.Len() != 0 {
+		t.Fatalf("Len() = %d after push on closed queue, want 0", q.Len())
+	}
 }
 
 func TestBlockedPopWakesOnClose(t *testing.T) {

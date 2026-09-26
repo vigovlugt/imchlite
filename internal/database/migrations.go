@@ -13,6 +13,23 @@ type migration struct {
 
 var migrations = []migration{
 	{version: 1, up: migration001},
+	{version: 2, up: migration002},
+}
+
+// migration002 adds the clip pipeline state to assets: clip_embedded_at is
+// the unix time the CLIP embedding was computed, or null while the clip
+// task is pending. Pending tasks are re-enqueued at startup.
+func migration002(tx *sql.Tx) error {
+	statements := []string{
+		`alter table assets add column clip_embedded_at integer`,
+		`create index if not exists assets_clip_embedded_idx on assets (clip_embedded_at)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("migration002: %w", err)
+		}
+	}
+	return nil
 }
 
 func migration001(tx *sql.Tx) error {

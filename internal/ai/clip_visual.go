@@ -9,6 +9,7 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"time"
 
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 	"golang.org/x/image/draw"
@@ -74,40 +75,57 @@ func (c *ClipVisual) Close() error {
 	return c.session.Close()
 }
 
-// Embed returns the embedding for the webp thumbnail at path.
-func (c *ClipVisual) Embed(ctx context.Context, path string) ([]float32, error) {
+// EmbedTimings holds the wall-clock duration in milliseconds of each stage
+// of a single embedding.
+type EmbedTimings struct {
+	DecodeMs    int64
+	TransformMs int64
+	InferenceMs int64
+}
+
+// Embed returns the embedding for the webp thumbnail at path, along with
+// the per-stage timings.
+func (c *ClipVisual) Embed(ctx context.Context, path string) ([]float32, EmbedTimings, error) {
+	var timings EmbedTimings
+
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, timings, err
 	}
 	defer f.Close()
 
+	decodeStart := time.Now()
 	img, err := webp.Decode(f)
 	if err != nil {
-		return nil, fmt.Errorf("decode thumbnail: %w", err)
+		return nil, timings, fmt.Errorf("decode thumbnail: %w", err)
 	}
+	timings.DecodeMs = time.Since(decodeStart).Milliseconds()
 
+	transformStart := time.Now()
 	input, err := ort.CreateTensor[float32]([]int64{1, 3, imageSize, imageSize}, preprocess(img))
 	if err != nil {
-		return nil, err
+		return nil, timings, err
 	}
 	defer input.Close()
+	timings.TransformMs = time.Since(transformStart).Milliseconds()
 
+	inferenceStart := time.Now()
 	outputs, err := c.session.Run(ctx, map[string]*ort.Tensor{visualInputName: input}, []string{visualOutputName})
 	if err != nil {
-		return nil, err
+		return nil, timings, err
 	}
 	defer func() {
 		for _, t := range outputs {
 			_ = t.Close()
 		}
 	}()
+	timings.InferenceMs = time.Since(inferenceStart).Milliseconds()
 
 	data, err := ort.TensorData[float32](outputs[visualOutputName])
 	if err != nil {
-		return nil, err
+		return nil, timings, err
 	}
-	return append([]float32(nil), data...), nil
+	return append([]float32(nil), data...), timings, nil
 }
 
 // preprocess squashes img to 224x224 (without preserving aspect ratio) using

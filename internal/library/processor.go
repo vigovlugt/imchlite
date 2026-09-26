@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/entity"
 	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
 	"github.com/vigovlugt/imchlite/internal/ffmpeg"
@@ -24,13 +25,25 @@ type assetTask struct {
 	Path   string
 }
 
-// assetPriority is the priority assigned to asset tasks. Higher values are
-// processed first; tasks of equal priority keep FIFO order.
-const assetPriority = 0
+type clipTask struct {
+	AssetID  int64
+	Checksum []byte
+}
 
-// NewAssetQueue creates the queue the indexer feeds and the workers drain.
-func NewAssetQueue() *queue.Queue[assetTask] {
-	return queue.New[assetTask]()
+// assetPriority is the priority assigned to asset tasks. Higher values are
+// processed first; tasks of equal priority keep FIFO order. Clip tasks use
+// a lower priority so asset work always runs first and clip work only
+// consumes idle worker capacity.
+const (
+	assetPriority = 0
+	clipPriority  = -1
+)
+
+// NewQueue creates the queue the indexer and processor feed and the workers
+// drain. It holds any task type; the processor switches on the concrete
+// type.
+func NewQueue() *queue.Queue[any] {
+	return queue.New[any]()
 }
 
 const (
@@ -49,32 +62,36 @@ var pipeableImageExtensions = map[string]struct{}{
 	".jpeg": {}, ".jpg": {}, ".jpe": {}, ".png": {}, ".webp": {}, ".bmp": {}, ".gif": {},
 }
 
-// processor holds the shared dependencies of the asset workers.
+// processor holds the shared dependencies of the asset and clip workers.
 type processor struct {
 	ctx             context.Context
 	libraryLocation string
 	ffmpeg          *ffmpeg.FFmpeg
 	files           *repository.File
 	assets          *repository.Asset
+	clip            *ai.ClipVisual
+	queue           *queue.Queue[any]
 }
 
-// NewProcessor creates a processor sharing the given repositories and
-// extracted ffmpeg binary.
-func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset) *processor {
+// NewProcessor creates a processor sharing the given repositories, the
+// extracted ffmpeg binary, the clip model and the task queue.
+func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, q *queue.Queue[any]) *processor {
 	return &processor{
 		ctx:             ctx,
 		libraryLocation: libraryLocation,
 		ffmpeg:          ff,
 		files:           files,
 		assets:          assets,
+		clip:            clip,
+		queue:           q,
 	}
 }
 
-// Worker consumes asset tasks from the queue until it is closed. Each worker
-// runs its own exiftool process.
-func (p *processor) Worker(et *exiftoolbin.Exiftool, queue *queue.Queue[assetTask], state *IndexerState) {
+// Worker consumes tasks from the queue until it is closed. Each worker runs
+// its own exiftool process.
+func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state *IndexerState) {
 	for {
-		task, ok := queue.Pop()
+		t, ok := q.Pop()
 		if !ok {
 			break
 		}
@@ -83,12 +100,24 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, queue *queue.Queue[assetTas
 			state.errored.Add(1)
 			continue
 		}
-		if err := p.process(task, et); err != nil {
-			log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
-			state.errored.Add(1)
-			continue
+		switch task := t.(type) {
+		case assetTask:
+			if err := p.processAsset(task, et); err != nil {
+				log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
+				state.errored.Add(1)
+				continue
+			}
+			state.processed.Add(1)
+		case clipTask:
+			if err := p.processClip(task); err != nil {
+				// The asset keeps clip_embedded_at null, so the task is
+				// re-enqueued on the next startup.
+				log.Printf("clip asset=%d: %v", task.AssetID, err)
+				continue
+			}
+		default:
+			log.Printf("unknown task type %T", t)
 		}
-		state.processed.Add(1)
 	}
 	log.Printf("worker finished")
 }
@@ -104,10 +133,11 @@ type processTimings struct {
 	dbMs       int64
 }
 
-// process checksums a file, stores (or reuses) its asset, and links the file
-// row to the asset. An asset row existing implies its metadata and thumbnail
-// were already extracted.
-func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
+// processAsset checksums a file, stores (or reuses) its asset, and links the
+// file row to the asset. An asset row existing implies its metadata and
+// thumbnail were already extracted. On success a clip task is enqueued for
+// the asset's thumbnail.
+func (p *processor) processAsset(task assetTask, et *exiftoolbin.Exiftool) error {
 	started := time.Now()
 
 	absolutePath := media.ResolveLibraryPath(p.libraryLocation, task.Path)
@@ -165,6 +195,10 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 	}
 	timings.dbMs += time.Since(dbStart).Milliseconds()
 
+	if asset.ThumbnailStatus == entity.ThumbnailStatusOK && asset.ClipEmbeddedAt == 0 {
+		p.queue.Push(clipTask{AssetID: asset.ID, Checksum: asset.Checksum}, clipPriority)
+	}
+
 	log.Printf(
 		"processed file=%d path=%s asset=%d total_ms=%d read_ms=%d checksum_ms=%d metadata_ms=%d thumbnail_ms=%d geo_ms=%d db_ms=%d",
 		task.FileID, task.Path, asset.ID,
@@ -172,6 +206,46 @@ func (p *processor) process(task assetTask, et *exiftoolbin.Exiftool) error {
 		timings.readMs, timings.checksumMs, timings.metadataMs, timings.thumbMs, timings.geoMs, timings.dbMs,
 	)
 	return nil
+}
+
+// processClip embeds the asset's thumbnail with the clip model and marks the
+// asset embedded. Failures are recoverable: the asset keeps
+// clip_embedded_at null and the task is re-enqueued on the next startup.
+func (p *processor) processClip(task clipTask) error {
+	started := time.Now()
+
+	embedding, timings, err := p.clip.Embed(p.ctx, thumbnailPath(p.libraryLocation, task.Checksum))
+	if err != nil {
+		return fmt.Errorf("embed thumbnail: %w", err)
+	}
+
+	// The embedding is discarded for now; persisting it is a follow-up
+	// (an embedding blob column on assets).
+	if err := p.assets.MarkClipEmbedded(p.ctx, task.AssetID, time.Now().Unix()); err != nil {
+		return err
+	}
+
+	log.Printf(
+		"clipped asset=%d dim=%d total_ms=%d decode_ms=%d transform_ms=%d inference_ms=%d",
+		task.AssetID, len(embedding),
+		time.Since(started).Milliseconds(),
+		timings.DecodeMs, timings.TransformMs, timings.InferenceMs,
+	)
+	return nil
+}
+
+// EnqueuePendingClipTasks re-adds clip tasks for assets that were indexed
+// with a thumbnail but never embedded, e.g. because the process restarted
+// while tasks were still queued. It returns the number of tasks enqueued.
+func EnqueuePendingClipTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any]) (int, error) {
+	pending, err := assets.GetPendingClipEmbeddings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, a := range pending {
+		q.Push(clipTask{AssetID: a.ID, Checksum: a.Checksum}, clipPriority)
+	}
+	return len(pending), nil
 }
 
 // createAsset probes the file's metadata, extracts the thumbnail and inserts
@@ -243,9 +317,7 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 }
 
 func (p *processor) createThumbnail(checksum []byte, absolutePath string, data []byte) error {
-	dir := filepath.Join(p.libraryLocation, ".imchlite", "thumbnails")
-	hex := fmt.Sprintf("%x", checksum)
-	dest := filepath.Join(dir, hex[0:2], hex[2:4], hex+".webp")
+	dest := thumbnailPath(p.libraryLocation, checksum)
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("create thumbnail dir: %w", err)
@@ -256,6 +328,14 @@ func (p *processor) createThumbnail(checksum []byte, absolutePath string, data [
 	}
 
 	return p.ffmpeg.Thumbnail(p.ctx, absolutePath, dest, thumbnailSize, thumbnailQuality)
+}
+
+// thumbnailPath returns the canonical thumbnail location for the asset with
+// the given checksum.
+func thumbnailPath(libraryLocation string, checksum []byte) string {
+	dir := filepath.Join(libraryLocation, ".imchlite", "thumbnails")
+	hex := fmt.Sprintf("%x", checksum)
+	return filepath.Join(dir, hex[0:2], hex[2:4], hex+".webp")
 }
 
 // fileChecksum returns the sha256 of a file's bytes.

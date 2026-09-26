@@ -1,0 +1,4 @@
+- Static link ffmpeg, exiftool, onnxruntime.
+- Explore libvips static linking.
+- Dynamically download onnxmodels.
+- Multiple workers with IO semaphores. (Make it like an allocator in zig but for IO)

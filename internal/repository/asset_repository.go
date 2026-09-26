@@ -88,6 +88,39 @@ func (r *Asset) Insert(ctx context.Context, a *entity.Asset) error {
 	return nil
 }
 
+// GetPendingClipEmbeddings returns assets whose clip embedding is still
+// pending (clip_embedded_at is null) and whose thumbnail exists. These are
+// re-enqueued as clip tasks at startup.
+func (r *Asset) GetPendingClipEmbeddings(ctx context.Context) ([]entity.Asset, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`select id, checksum from assets
+		 where clip_embedded_at is null and thumbnail_status = 0 and deleted_at is null`)
+	if err != nil {
+		return nil, fmt.Errorf("pending clip embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	assets := []entity.Asset{}
+	for rows.Next() {
+		var a entity.Asset
+		if err := rows.Scan(&a.ID, &a.Checksum); err != nil {
+			return nil, fmt.Errorf("scan pending clip embedding: %w", err)
+		}
+		assets = append(assets, a)
+	}
+	return assets, rows.Err()
+}
+
+// MarkClipEmbedded records that the asset's clip embedding was computed.
+func (r *Asset) MarkClipEmbedded(ctx context.Context, id, at int64) error {
+	if _, err := r.db.ExecContext(ctx,
+		`update assets set clip_embedded_at = ?, updated_at = unixepoch() where id = ?`,
+		at, id); err != nil {
+		return fmt.Errorf("mark clip embedded %d: %w", id, err)
+	}
+	return nil
+}
+
 // AssetCursor is the keyset pagination position: the capture time and id of
 // the last asset of the previous page.
 type AssetCursor struct {

@@ -59,11 +59,13 @@ func New[T any]() *Queue[T] {
 
 // Push enqueues v with the given priority; higher priorities are popped
 // first. Items of equal priority are popped in the order they were pushed.
+// Pushing after Close is a no-op: pending work is re-derived from the
+// database on the next startup.
 func (q *Queue[T]) Push(v T, priority int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		panic("queue: push on closed queue")
+		return
 	}
 	heap.Push(&q.items, priorityQueueItem[T]{value: v, priority: priority, seq: q.nextSeq})
 	q.nextSeq++

@@ -13,11 +13,13 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/api"
 	"github.com/vigovlugt/imchlite/internal/database"
 	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
 	"github.com/vigovlugt/imchlite/internal/ffmpeg"
 	"github.com/vigovlugt/imchlite/internal/library"
+	onnxruntime "github.com/vigovlugt/imchlite/internal/onnxruntime"
 	"github.com/vigovlugt/imchlite/internal/repository"
 )
 
@@ -56,6 +58,21 @@ func main() {
 	}
 	log.Printf("debug: extracted exiftool in %s", time.Since(start))
 
+	start = time.Now()
+	if err := onnxruntime.Setup(); err != nil {
+		log.Fatalf("setup onnxruntime: %v", err)
+	}
+	clipDir, err := ai.Setup()
+	if err != nil {
+		log.Fatalf("extract clip visual model: %v", err)
+	}
+	clip, err := ai.NewClipVisual(clipDir)
+	if err != nil {
+		log.Fatalf("load clip visual model: %v", err)
+	}
+	defer clip.Close()
+	log.Printf("debug: loaded clip visual model in %s", time.Since(start))
+
 	f, err := ffmpeg.New(ffmpegDir)
 	if err != nil {
 		log.Fatalf("start ffmpeg: %v", err)
@@ -74,9 +91,17 @@ func main() {
 
 	fileRepo := repository.NewFileRepository(db)
 	assetRepo := repository.NewAsset(db)
-	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo)
-	queue := library.NewAssetQueue()
+	queue := library.NewQueue()
+	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip, queue)
 	state := library.NewIndexerState()
+
+	// Clip tasks live only in memory; the clip_embedded_at column is the
+	// durable marker. Re-derive any tasks lost by a previous restart.
+	if n, err := library.EnqueuePendingClipTasks(ctx, assetRepo, queue); err != nil {
+		log.Fatalf("recover pending clip tasks: %v", err)
+	} else if n > 0 {
+		log.Printf("re-enqueued %d pending clip tasks", n)
+	}
 
 	var wg sync.WaitGroup
 	for range *workers {
@@ -99,7 +124,6 @@ func main() {
 		} else {
 			log.Printf("indexing completed")
 		}
-		queue.Close()
 	})
 
 	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, frontendHandler())
@@ -108,10 +132,12 @@ func main() {
 		return
 	}
 
-	// Server stopped (signal received): the indexer stops walking on the
-	// canceled context and closes the queue; workers drain it and exit.
-	// Only then are the exiftool processes closed by the deferred Close.
-	// The extracted ffmpeg/exiftool cache stays on disk for the next run.
+	// Server stopped (signal received): close the queue, canceling the
+	// indexer's walk; workers drain the queue and exit. Pushes racing the
+	// close are no-ops — any task dropped that way stays pending in the
+	// database and is re-enqueued on the next startup. The extracted
+	// ffmpeg/exiftool/clip cache stays on disk for the next run.
+	queue.Close()
 	indexWG.Wait()
 	wg.Wait()
 }
