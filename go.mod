@@ -10,3 +10,5 @@ require (
 require github.com/microsoft/onnxruntime/go v0.0.0-20260925192640-b61f007b2e64
 
 require golang.org/x/image v0.46.0
+
+require github.com/daulet/tokenizers v1.27.0

@@ -70,7 +70,17 @@ func main() {
 		log.Fatalf("load clip visual model: %v", err)
 	}
 	defer clip.Close()
-	log.Printf("debug: loaded clip visual model in %s", time.Since(start))
+
+	textualDir, err := ai.SetupTextual()
+	if err != nil {
+		log.Fatalf("extract clip textual model: %v", err)
+	}
+	textual, err := ai.NewClipTextual(textualDir)
+	if err != nil {
+		log.Fatalf("load clip textual model: %v", err)
+	}
+	defer textual.Close()
+	log.Printf("debug: loaded clip models in %s", time.Since(start))
 
 	start = time.Now()
 	vec1Dir, err := vec1.Setup()
