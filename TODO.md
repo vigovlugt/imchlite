@@ -1,4 +1,4 @@
 - Static link ffmpeg, exiftool, onnxruntime.
-- Explore libvips static linking.
+- Explore libvips (https://www.npmjs.com/package/@img/sharp-libvips-linux-x64?activeTab=code /lib/libvips-cpp.so.8.18.6) static linking.
 - Dynamically download onnxmodels.
 - Multiple workers with IO semaphores. (Make it like an allocator in zig but for IO)

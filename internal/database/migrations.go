@@ -19,6 +19,12 @@ var migrations = []migration{
 // migration002 adds the clip embedding pipeline. asset_clip_embeddings
 // holds one embedding per asset; an asset without a row there has its
 // clip task pending, so the table doubles as the durable task marker.
+//
+// It also creates asset_clip_embeddings_vec, the vec1 vector index over the
+// embeddings. The virtual table mirrors asset_clip_embeddings: the vec1
+// rowid is the asset id and the embedding blobs are vec1's native format,
+// so the triggers keep the mirror in sync. Virtual tables cannot be
+// referenced by foreign keys, hence the triggers instead of a cascade.
 func migration002(tx *sql.Tx) error {
 	statements := []string{
 		`create table if not exists asset_clip_embeddings (
@@ -29,6 +35,32 @@ func migration002(tx *sql.Tx) error {
 
 		    created_at integer not null default (unixepoch())
 		)`,
+		`create virtual table if not exists asset_clip_embeddings_vec
+		    using vec1(embedding)`,
+		// Exact nearest-neighbor search over packed vectors with cosine
+		// distance: no training needed, and roughly twice as fast as the
+		// default no-index mode. Fine up to tens of thousands of vectors;
+		// switch to a trained ANN model when the library outgrows it.
+		`insert into asset_clip_embeddings_vec (cmd, arg)
+		    values ('rebuild', '{index:"flat", distance:"cos"}')`,
+		// vec1 virtual tables do not support upsert, so skip rows that are
+		// already mirrored instead of using insert or replace.
+		`insert into asset_clip_embeddings_vec (rowid, embedding)
+		    select e.asset_id, e.embedding from asset_clip_embeddings e
+		    where not exists (
+		        select 1 from asset_clip_embeddings_vec v where v.rowid = e.asset_id
+		    )`,
+		`create trigger if not exists asset_clip_embeddings_vec_ai
+		    after insert on asset_clip_embeddings
+		begin
+		    insert into asset_clip_embeddings_vec (rowid, embedding)
+		        values (new.asset_id, new.embedding);
+		end`,
+		`create trigger if not exists asset_clip_embeddings_vec_ad
+		    after delete on asset_clip_embeddings
+		begin
+		    delete from asset_clip_embeddings_vec where rowid = old.asset_id;
+		end`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {

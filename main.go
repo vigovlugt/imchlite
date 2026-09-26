@@ -11,8 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-
 	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/api"
 	"github.com/vigovlugt/imchlite/internal/database"
@@ -21,6 +19,7 @@ import (
 	"github.com/vigovlugt/imchlite/internal/library"
 	onnxruntime "github.com/vigovlugt/imchlite/internal/onnxruntime"
 	"github.com/vigovlugt/imchlite/internal/repository"
+	"github.com/vigovlugt/imchlite/internal/vec1"
 )
 
 func main() {
@@ -73,12 +72,19 @@ func main() {
 	defer clip.Close()
 	log.Printf("debug: loaded clip visual model in %s", time.Since(start))
 
+	start = time.Now()
+	vec1Dir, err := vec1.Setup()
+	if err != nil {
+		log.Fatalf("extract vec1 extension: %v", err)
+	}
+	log.Printf("debug: extracted vec1 extension in %s", time.Since(start))
+
 	f, err := ffmpeg.New(ffmpegDir)
 	if err != nil {
 		log.Fatalf("start ffmpeg: %v", err)
 	}
 
-	db, err := database.Open(libraryLocation)
+	db, err := database.Open(libraryLocation, vec1.LibraryPath(vec1Dir))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
