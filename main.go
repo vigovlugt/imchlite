@@ -95,7 +95,7 @@ func main() {
 	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip, queue)
 	state := library.NewIndexerState()
 
-	// Clip tasks live only in memory; the clip_embedded_at column is the
+	// Clip tasks live only in memory; a row in asset_clip_embeddings is the
 	// durable marker. Re-derive any tasks lost by a previous restart.
 	if n, err := library.EnqueuePendingClipTasks(ctx, assetRepo, queue); err != nil {
 		log.Fatalf("recover pending clip tasks: %v", err)

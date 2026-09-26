@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -110,7 +112,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 			state.processed.Add(1)
 		case clipTask:
 			if err := p.processClip(task); err != nil {
-				// The asset keeps clip_embedded_at null, so the task is
+				// The asset has no clip embedding row yet, so the task is
 				// re-enqueued on the next startup.
 				log.Printf("clip asset=%d: %v", task.AssetID, err)
 				continue
@@ -195,7 +197,7 @@ func (p *processor) processAsset(task assetTask, et *exiftoolbin.Exiftool) error
 	}
 	timings.dbMs += time.Since(dbStart).Milliseconds()
 
-	if asset.ThumbnailStatus == entity.ThumbnailStatusOK && asset.ClipEmbeddedAt == 0 {
+	if asset.ThumbnailStatus == entity.ThumbnailStatusOK {
 		p.queue.Push(clipTask{AssetID: asset.ID, Checksum: asset.Checksum}, clipPriority)
 	}
 
@@ -210,7 +212,7 @@ func (p *processor) processAsset(task assetTask, et *exiftoolbin.Exiftool) error
 
 // processClip embeds the asset's thumbnail with the clip model and marks the
 // asset embedded. Failures are recoverable: the asset keeps
-// clip_embedded_at null and the task is re-enqueued on the next startup.
+// clip embedding row and the task is re-enqueued on the next startup.
 func (p *processor) processClip(task clipTask) error {
 	started := time.Now()
 
@@ -219,9 +221,7 @@ func (p *processor) processClip(task clipTask) error {
 		return fmt.Errorf("embed thumbnail: %w", err)
 	}
 
-	// The embedding is discarded for now; persisting it is a follow-up
-	// (an embedding blob column on assets).
-	if err := p.assets.MarkClipEmbedded(p.ctx, task.AssetID, time.Now().Unix()); err != nil {
+	if err := p.assets.InsertClipEmbedding(p.ctx, task.AssetID, encodeEmbedding(embedding)); err != nil {
 		return err
 	}
 
@@ -234,11 +234,21 @@ func (p *processor) processClip(task clipTask) error {
 	return nil
 }
 
+// encodeEmbedding packs a float32 vector as a little-endian byte blob for
+// the asset_clip_embeddings table.
+func encodeEmbedding(embedding []float32) []byte {
+	blob := make([]byte, 4*len(embedding))
+	for i, v := range embedding {
+		binary.LittleEndian.PutUint32(blob[4*i:], math.Float32bits(v))
+	}
+	return blob
+}
+
 // EnqueuePendingClipTasks re-adds clip tasks for assets that were indexed
 // with a thumbnail but never embedded, e.g. because the process restarted
 // while tasks were still queued. It returns the number of tasks enqueued.
 func EnqueuePendingClipTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any]) (int, error) {
-	pending, err := assets.GetPendingClipEmbeddings(ctx)
+	pending, err := assets.GetAssetsWithoutClipEmbedding(ctx)
 	if err != nil {
 		return 0, err
 	}

@@ -16,13 +16,19 @@ var migrations = []migration{
 	{version: 2, up: migration002},
 }
 
-// migration002 adds the clip pipeline state to assets: clip_embedded_at is
-// the unix time the CLIP embedding was computed, or null while the clip
-// task is pending. Pending tasks are re-enqueued at startup.
+// migration002 adds the clip embedding pipeline. asset_clip_embeddings
+// holds one embedding per asset; an asset without a row there has its
+// clip task pending, so the table doubles as the durable task marker.
 func migration002(tx *sql.Tx) error {
 	statements := []string{
-		`alter table assets add column clip_embedded_at integer`,
-		`create index if not exists assets_clip_embedded_idx on assets (clip_embedded_at)`,
+		`create table if not exists asset_clip_embeddings (
+		    asset_id integer primary key references assets (id) on delete cascade,
+
+		    -- little-endian float32 vector, blob length implies the dimension
+		    embedding blob not null,
+
+		    created_at integer not null default (unixepoch())
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {

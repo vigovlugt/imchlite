@@ -55,10 +55,6 @@ type Asset struct {
 	// ThumbnailStatus records whether the webp thumbnail was generated.
 	ThumbnailStatus ThumbnailStatus
 
-	// ClipEmbeddedAt is the unix time the CLIP embedding was computed;
-	// 0 means the clip task is still pending.
-	ClipEmbeddedAt int64
-
 	// Thumbhash []byte
 
 	// user state
