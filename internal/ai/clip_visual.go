@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -45,8 +46,15 @@ const (
 
 // ClipVisual produces embeddings for image and video frames.
 type ClipVisual struct {
-	Path    string
+	Path string
+
+	// session is set by the load goroutine before ready is closed; read it
+	// only after receiving from ready.
 	session *ort.Session
+	// ready is closed once the model load finished; if loadErr is non-nil
+	// the load failed and Embed returns it.
+	ready   chan struct{}
+	loadErr error
 }
 
 // Setup downloads the visual model from the Hugging Face hub to the user
@@ -60,22 +68,44 @@ func Setup(ctx context.Context) (string, error) {
 }
 
 // NewClipVisual creates a new ClipVisual model using the model file in the
-// directory created by Setup.
+// directory created by Setup. The inference session is created in the
+// background; Embed and Close wait for it to finish.
 func NewClipVisual(dir string) (*ClipVisual, error) {
 	path := filepath.Join(dir, visualModelFilename)
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("visual model: %w", err)
 	}
 
-	session, err := ort.NewSession(path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("load visual model: %w", err)
-	}
-	return &ClipVisual{Path: path, session: session}, nil
+	c := &ClipVisual{Path: path, ready: make(chan struct{})}
+	go func() {
+		defer close(c.ready)
+
+		start := time.Now()
+		session, err := ort.NewSession(path, nil)
+		if err != nil {
+			c.loadErr = fmt.Errorf("load visual model: %w", err)
+			return
+		}
+		c.session = session
+		log.Printf("debug: clip visual model loaded in %s", time.Since(start))
+	}()
+	return c, nil
 }
 
-// Close releases the underlying inference session.
+// waitLoad blocks until the background model load finished, or ctx is done.
+func (c *ClipVisual) waitLoad(ctx context.Context) error {
+	select {
+	case <-c.ready:
+		return c.loadErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close releases the underlying inference session. It waits for a
+// background model load to finish first.
 func (c *ClipVisual) Close() error {
+	<-c.ready
 	if c.session == nil {
 		return nil
 	}
@@ -91,9 +121,13 @@ type EmbedTimings struct {
 }
 
 // Embed returns the embedding for the webp thumbnail at path, along with
-// the per-stage timings.
+// the per-stage timings. It blocks until the background model load finished.
 func (c *ClipVisual) Embed(ctx context.Context, path string) ([]float32, EmbedTimings, error) {
 	var timings EmbedTimings
+
+	if err := c.waitLoad(ctx); err != nil {
+		return nil, timings, err
+	}
 
 	f, err := os.Open(path)
 	if err != nil {

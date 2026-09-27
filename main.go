@@ -67,7 +67,7 @@ func main() {
 	}
 	clip, err := ai.NewClipVisual(clipDir)
 	if err != nil {
-		log.Fatalf("load clip visual model: %v", err)
+		log.Fatalf("create clip visual model: %v", err)
 	}
 	defer clip.Close()
 
@@ -77,10 +77,10 @@ func main() {
 	}
 	textual, err := ai.NewClipTextual(textualDir)
 	if err != nil {
-		log.Fatalf("load clip textual model: %v", err)
+		log.Fatalf("create clip textual model: %v", err)
 	}
 	defer textual.Close()
-	log.Printf("debug: downloaded/loaded clip models in %s", time.Since(start))
+	log.Printf("debug: downloaded clip models in %s", time.Since(start))
 
 	start = time.Now()
 	vec1Dir, err := vec1.Setup()

@@ -3,8 +3,10 @@ package ai
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/daulet/tokenizers"
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
@@ -29,9 +31,16 @@ const (
 
 // ClipTextual produces embeddings for text queries.
 type ClipTextual struct {
-	Path      string
+	Path string
+
+	// session and tokenizer are set by the load goroutine before ready is
+	// closed; read them only after receiving from ready.
 	session   *ort.Session
 	tokenizer *tokenizers.Tokenizer
+	// ready is closed once the model load finished; if loadErr is non-nil
+	// the load failed and Embed returns it.
+	ready   chan struct{}
+	loadErr error
 }
 
 // SetupTextual downloads the textual model and tokenizer from the Hugging
@@ -48,35 +57,62 @@ func SetupTextual(ctx context.Context) (string, error) {
 }
 
 // NewClipTextual creates a new ClipTextual model using the model files in the
-// directory created by SetupTextual.
+// directory created by SetupTextual. The tokenizer and inference session are
+// created in the background; Embed and Close wait for them to finish.
 func NewClipTextual(dir string) (*ClipTextual, error) {
 	path := filepath.Join(dir, textualModelFilename)
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("textual model: %w", err)
 	}
 
-	// The tokenizer from the Hugging Face repository has no baked-in
-	// padding or truncation, so truncation to the model's context length is
-	// set here; padding is applied after encoding.
-	data, err := os.ReadFile(filepath.Join(dir, tokenizerFilename))
-	if err != nil {
-		return nil, fmt.Errorf("read tokenizer: %w", err)
-	}
-	tokenizer, err := tokenizers.FromBytesWithTruncation(data, contextLength, tokenizers.TruncationDirectionRight)
-	if err != nil {
-		return nil, fmt.Errorf("load tokenizer: %w", err)
-	}
+	c := &ClipTextual{Path: path, ready: make(chan struct{})}
+	go func() {
+		defer close(c.ready)
 
-	session, err := ort.NewSession(path, nil)
-	if err != nil {
-		tokenizer.Close()
-		return nil, fmt.Errorf("load textual model: %w", err)
-	}
-	return &ClipTextual{Path: path, session: session, tokenizer: tokenizer}, nil
+		start := time.Now()
+
+		// The tokenizer from the Hugging Face repository has no baked-in
+		// padding or truncation, so truncation to the model's context length
+		// is set here; padding is applied after encoding.
+		data, err := os.ReadFile(filepath.Join(dir, tokenizerFilename))
+		if err != nil {
+			c.loadErr = fmt.Errorf("read tokenizer: %w", err)
+			return
+		}
+		tokenizer, err := tokenizers.FromBytesWithTruncation(data, contextLength, tokenizers.TruncationDirectionRight)
+		if err != nil {
+			c.loadErr = fmt.Errorf("load tokenizer: %w", err)
+			return
+		}
+
+		session, err := ort.NewSession(path, nil)
+		if err != nil {
+			tokenizer.Close()
+			c.loadErr = fmt.Errorf("load textual model: %w", err)
+			return
+		}
+
+		c.session = session
+		c.tokenizer = tokenizer
+		log.Printf("debug: clip textual model loaded in %s", time.Since(start))
+	}()
+	return c, nil
 }
 
-// Close releases the underlying inference session and tokenizer.
+// waitLoad blocks until the background model load finished, or ctx is done.
+func (c *ClipTextual) waitLoad(ctx context.Context) error {
+	select {
+	case <-c.ready:
+		return c.loadErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Close releases the underlying inference session and tokenizer. It waits
+// for a background model load to finish first.
 func (c *ClipTextual) Close() error {
+	<-c.ready
 	if c.tokenizer != nil {
 		_ = c.tokenizer.Close()
 		c.tokenizer = nil
@@ -87,8 +123,13 @@ func (c *ClipTextual) Close() error {
 	return c.session.Close()
 }
 
-// Embed returns the embedding for a text query.
+// Embed returns the embedding for a text query. It blocks until the
+// background model load finished.
 func (c *ClipTextual) Embed(ctx context.Context, text string) ([]float32, error) {
+	if err := c.waitLoad(ctx); err != nil {
+		return nil, err
+	}
+
 	ids, _, err := c.tokenizer.EncodeErr(text, true)
 	if err != nil {
 		return nil, fmt.Errorf("tokenize: %w", err)
