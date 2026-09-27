@@ -61,9 +61,9 @@ func main() {
 	if err := onnxruntime.Setup(); err != nil {
 		log.Fatalf("setup onnxruntime: %v", err)
 	}
-	clipDir, err := ai.Setup()
+	clipDir, err := ai.Setup(ctx)
 	if err != nil {
-		log.Fatalf("extract clip visual model: %v", err)
+		log.Fatalf("download clip visual model: %v", err)
 	}
 	clip, err := ai.NewClipVisual(clipDir)
 	if err != nil {
@@ -71,16 +71,16 @@ func main() {
 	}
 	defer clip.Close()
 
-	textualDir, err := ai.SetupTextual()
+	textualDir, err := ai.SetupTextual(ctx)
 	if err != nil {
-		log.Fatalf("extract clip textual model: %v", err)
+		log.Fatalf("download clip textual model: %v", err)
 	}
 	textual, err := ai.NewClipTextual(textualDir)
 	if err != nil {
 		log.Fatalf("load clip textual model: %v", err)
 	}
 	defer textual.Close()
-	log.Printf("debug: loaded clip models in %s", time.Since(start))
+	log.Printf("debug: downloaded/loaded clip models in %s", time.Since(start))
 
 	start = time.Now()
 	vec1Dir, err := vec1.Setup()

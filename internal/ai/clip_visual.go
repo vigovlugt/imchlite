@@ -4,7 +4,6 @@ package ai
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 	"image"
 	"os"
@@ -16,18 +15,29 @@ import (
 	"golang.org/x/image/webp"
 
 	"github.com/vigovlugt/imchlite/internal/cachedir"
+	"github.com/vigovlugt/imchlite/internal/hfmodel"
 )
 
-// The SigLIP2 visual encoder is platform independent, so unlike the ffmpeg and
-// onnxruntime binaries it is embedded without build tags.
-//
-//go:embed bin/visual_model.onnx
-var visualModelBytes []byte
+// The SigLIP2 models are downloaded from the immich-app Hugging Face
+// repository on first use; the hashes pin the exact files so an updated or
+// corrupted download is rejected.
+const (
+	modelRepo = "https://huggingface.co/immich-app/ViT-B-16-SigLIP2__webli/resolve/main"
+
+	visualModelFilename = "visual_model.onnx"
+	visualModelSHA256   = "fee10c729875dd203d94f396ac3d664e301d39c977ef6d92e7f467a2a716f0b0"
+
+	textualModelFilename = "text_model.onnx"
+	textualModelSHA256   = "fc9991b415d7d0fac7ed540e875fd08a647c8a1abba99f12542531b004c4b68f"
+
+	tokenizerFilename  = "tokenizer.json"
+	tokenizerSHA256    = "220c63d496e0c14e63eb656c91e0215e926202e4c74b1f089e09f1920d779b04"
+	tokenizerMaxLength = 64
+)
 
 const (
-	visualModelFilename = "visual_model.onnx"
-	visualInputName     = "image"
-	visualOutputName    = "embedding"
+	visualInputName  = "image"
+	visualOutputName = "embedding"
 
 	// The SigLIP2 visual encoder expects a 224x224 RGB image.
 	imageSize = 224
@@ -39,16 +49,13 @@ type ClipVisual struct {
 	session *ort.Session
 }
 
-// Setup extracts the embedded visual model to the user cache directory on
-// first use and returns the directory containing it. The directory persists
-// between runs.
-func Setup() (string, error) {
-	if len(visualModelBytes) == 0 {
-		return "", fmt.Errorf("no embedded visual model")
-	}
-
+// Setup downloads the visual model from the Hugging Face hub to the user
+// cache directory on first use and returns the directory containing it. The
+// directory persists between runs.
+func Setup(ctx context.Context) (string, error) {
 	return cachedir.Ensure("clip-visual", func(dir string) error {
-		return os.WriteFile(filepath.Join(dir, visualModelFilename), visualModelBytes, 0o644)
+		_, err := hfmodel.Download(ctx, dir, visualModelFilename, modelRepo+"/visual/model.onnx", visualModelSHA256)
+		return err
 	})
 }
 

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/vigovlugt/imchlite/internal/onnxruntime"
@@ -13,7 +14,7 @@ func TestClipTextualEmbed(t *testing.T) {
 		t.Skipf("onnxruntime: %v", err)
 	}
 
-	dir, err := SetupTextual()
+	dir, err := SetupTextual(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,6 +36,12 @@ func TestClipTextualEmbed(t *testing.T) {
 	mountain, err := clip.Embed(context.Background(), "mountain")
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// A long query must be truncated, not rejected.
+	long := strings.Repeat("hello world ", 100)
+	if _, err := clip.Embed(context.Background(), long); err != nil {
+		t.Fatalf("embed long query: %v", err)
 	}
 
 	// Two different queries must produce different, normalized embeddings.

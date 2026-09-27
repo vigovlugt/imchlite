@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,27 +10,21 @@ import (
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 
 	"github.com/vigovlugt/imchlite/internal/cachedir"
+	"github.com/vigovlugt/imchlite/internal/hfmodel"
 )
 
-// The SigLIP2 textual encoder is platform independent, so unlike the ffmpeg
-// and onnxruntime binaries it is embedded without build tags.
-//
-//go:embed bin/text_model.onnx
-var textualModelBytes []byte
-
-//go:embed bin/tokenizer.json
-var tokenizerBytes []byte
-
 const (
-	textualModelFilename = "text_model.onnx"
-	tokenizerFilename    = "tokenizer.json"
-	textualInputName     = "text"
-	textualOutputName    = "embedding"
+	textualInputName  = "text"
+	textualOutputName = "embedding"
 
-	// The SigLIP2 textual encoder expects a fixed sequence of 64 tokens,
-	// padded with the <pad> token (id 0) and terminated by <eos> (id 1);
-	// the padding and truncation are baked into the embedded tokenizer.json.
+	// The SigLIP2 textual encoder expects a fixed sequence of contextLength
+	// tokens, terminated by <eos> (id 1) and padded with <pad> (id 0). The
+	// tokenizer from the Hugging Face repository does not pad, so padding and
+	// truncation are applied in code below.
 	contextLength = 64
+
+	// The <pad> token id.
+	padTokenID = 0
 )
 
 // ClipTextual produces embeddings for text queries.
@@ -41,19 +34,16 @@ type ClipTextual struct {
 	tokenizer *tokenizers.Tokenizer
 }
 
-// SetupTextual extracts the embedded textual model and tokenizer to the user
-// cache directory on first use and returns the directory containing them.
-// The directory persists between runs.
-func SetupTextual() (string, error) {
-	if len(textualModelBytes) == 0 {
-		return "", fmt.Errorf("no embedded textual model")
-	}
-
+// SetupTextual downloads the textual model and tokenizer from the Hugging
+// Face hub to the user cache directory on first use and returns the directory
+// containing them. The directory persists between runs.
+func SetupTextual(ctx context.Context) (string, error) {
 	return cachedir.Ensure("clip-textual", func(dir string) error {
-		if err := os.WriteFile(filepath.Join(dir, textualModelFilename), textualModelBytes, 0o644); err != nil {
+		if _, err := hfmodel.Download(ctx, dir, textualModelFilename, modelRepo+"/textual/model.onnx", textualModelSHA256); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(dir, tokenizerFilename), tokenizerBytes, 0o644)
+		_, err := hfmodel.Download(ctx, dir, tokenizerFilename, modelRepo+"/textual/tokenizer.json", tokenizerSHA256)
+		return err
 	})
 }
 
@@ -65,8 +55,14 @@ func NewClipTextual(dir string) (*ClipTextual, error) {
 		return nil, fmt.Errorf("textual model: %w", err)
 	}
 
-	tokenizerPath := filepath.Join(dir, tokenizerFilename)
-	tokenizer, err := tokenizers.FromFile(tokenizerPath)
+	// The tokenizer from the Hugging Face repository has no baked-in
+	// padding or truncation, so truncation to the model's context length is
+	// set here; padding is applied after encoding.
+	data, err := os.ReadFile(filepath.Join(dir, tokenizerFilename))
+	if err != nil {
+		return nil, fmt.Errorf("read tokenizer: %w", err)
+	}
+	tokenizer, err := tokenizers.FromBytesWithTruncation(data, contextLength, tokenizers.TruncationDirectionRight)
 	if err != nil {
 		return nil, fmt.Errorf("load tokenizer: %w", err)
 	}
@@ -97,11 +93,11 @@ func (c *ClipTextual) Embed(ctx context.Context, text string) ([]float32, error)
 	if err != nil {
 		return nil, fmt.Errorf("tokenize: %w", err)
 	}
-	if len(ids) != contextLength {
-		return nil, fmt.Errorf("tokenize: got %d tokens, want %d", len(ids), contextLength)
+	if len(ids) > contextLength {
+		return nil, fmt.Errorf("tokenize: got %d tokens, want at most %d", len(ids), contextLength)
 	}
 
-	input, err := ort.CreateTensor[int32]([]int64{1, contextLength}, toInt32(ids))
+	input, err := ort.CreateTensor[int32]([]int64{1, contextLength}, toInt32(pad(ids, contextLength, padTokenID)))
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +124,21 @@ func toInt32(ids []uint32) []int32 {
 	out := make([]int32, len(ids))
 	for i, id := range ids {
 		out[i] = int32(id)
+	}
+	return out
+}
+
+// pad right-pads ids with padID to length n. The ids already end with <eos>
+// (added by the tokenizer's template), so padding after them matches the
+// fixed-length encoding the model was trained with.
+func pad(ids []uint32, n int, padID uint32) []uint32 {
+	if len(ids) >= n {
+		return ids
+	}
+	out := make([]uint32, n)
+	copy(out, ids)
+	for i := len(ids); i < n; i++ {
+		out[i] = padID
 	}
 	return out
 }
