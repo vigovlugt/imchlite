@@ -66,7 +66,7 @@ func openBrowser(url string) {
 
 // RunServer serves until the context is canceled, then shuts down gracefully.
 func RunServer(ctx context.Context, srv *http.Server) error {
-	log.Printf("api server listening on %s", srv.Addr)
+	log.Printf("server listening on %s", srv.Addr)
 
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {

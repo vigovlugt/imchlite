@@ -54,7 +54,7 @@ func (f *FFmpeg) Run(ctx context.Context, args ...string) ([]byte, []byte, error
 }
 
 func (f *FFmpeg) Thumbnail(ctx context.Context, source, dest string, size, quality int) error {
-	filter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", size, size)
+	filter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,format=rgb24", size, size)
 	_, _, err := f.Run(ctx,
 		"-y",
 		"-i", source,
@@ -74,7 +74,7 @@ func (f *FFmpeg) ThumbnailFromReader(ctx context.Context, r io.Reader, dest stri
 	cmd := exec.CommandContext(ctx, f.Path,
 		"-y",
 		"-i", "pipe:0",
-		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", size, size),
+		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase,format=rgb24", size, size),
 		"-frames:v", "1",
 		"-q:v", strconv.Itoa(quality),
 		dest,
