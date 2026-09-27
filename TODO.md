@@ -1,4 +1,3 @@
-- Clip loading in background.
 - Face recognition.
 - Static link ffmpeg, exiftool, onnxruntime, tokenizers.
 - Explore libvips (https://www.npmjs.com/package/@img/sharp-libvips-linux-x64?activeTab=code /lib/libvips-cpp.so.8.18.6) static linking.
