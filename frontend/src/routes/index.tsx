@@ -243,6 +243,7 @@ function Home() {
     filters.until !== undefined;
 
   const similarityMode = search.context_query !== undefined;
+  const showStaleResults = similarityMode && assetsQuery.isPlaceholderData;
 
   return (
     <SidebarProvider>
@@ -273,7 +274,7 @@ function Home() {
         </header>
 
         <div className="flex-1 overflow-y-auto">
-          {assetsQuery.isPending ? (
+          {assetsQuery.isPending || showStaleResults ? (
             <div className="grid gap-0.5 px-6 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
               {Array.from({ length: 24 }, (_, i) => (
                 <Skeleton key={i} className="aspect-square" />
@@ -780,12 +781,6 @@ function AppSidebar({
             />
           </SidebarGroupContent>
         </SidebarGroup>
-
-        {facets && (
-          <p className="px-6 py-3 text-xs text-muted-foreground">
-            {facets.totalCount} assets in library
-          </p>
-        )}
 
         <SidebarGroup>
           <SidebarGroupLabel>Search</SidebarGroupLabel>
