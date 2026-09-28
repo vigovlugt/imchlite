@@ -1,5 +1,5 @@
 - Face recognition.
 - Static link ffmpeg, exiftool, onnxruntime, tokenizers.
 - Explore libvips (https://www.npmjs.com/package/@img/sharp-libvips-linux-x64?activeTab=code /lib/libvips-cpp.so.8.18.6) static linking.
-- Dynamically download onnxmodels.
 - Multiple workers with IO semaphores. (Make it like an allocator in zig but for IO)
+- Consider windows_inode and linux_inode in db.
