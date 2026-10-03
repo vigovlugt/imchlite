@@ -87,3 +87,24 @@ func (f *FFmpeg) ThumbnailFromReader(ctx context.Context, r io.Reader, dest stri
 	}
 	return nil
 }
+
+// maxWebpDimension is the largest width or height a webp image can have.
+const maxWebpDimension = 16383
+
+// Preview converts an image to webp at its native resolution, only scaling
+// it down when it exceeds webp's dimension limit, and returns the encoded
+// bytes.
+func (f *FFmpeg) Preview(ctx context.Context, source string, quality int) ([]byte, error) {
+	filter := fmt.Sprintf("scale='min(iw,%[1]d)':'min(ih,%[1]d)':force_original_aspect_ratio=decrease,format=rgb24", maxWebpDimension)
+	stdout, _, err := f.Run(ctx,
+		"-i", source,
+		// Complex filtergraph for tiled HEIF/HEIC images (Apple Photos).
+		"-filter_complex", filter+"[out]",
+		"-map", "[out]",
+		"-frames:v", "1",
+		"-q:v", strconv.Itoa(quality),
+		"-f", "webp",
+		"pipe:1",
+	)
+	return stdout, err
+}

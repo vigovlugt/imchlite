@@ -57,6 +57,11 @@ export function mediaUrl(checksum: string): string {
   return `/api/media/${checksum}`
 }
 
+/** the original file, or a webp conversion when the browser can't display it */
+export function previewUrl(checksum: string): string {
+  return `/api/preview/${checksum}`
+}
+
 export function downloadUrl(checksum: string): string {
   return `/api/media/${checksum}?download=1`
 }

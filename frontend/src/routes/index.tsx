@@ -19,6 +19,7 @@ import {
   fetchFacets,
   fetchIndexStatus,
   mediaUrl,
+  previewUrl,
   thumbUrl,
   type Asset,
   type AssetFilters,
@@ -496,7 +497,7 @@ function Lightbox({
           />
         ) : (
           <img
-            src={mediaUrl(asset.checksum)}
+            src={previewUrl(asset.checksum)}
             alt=""
             className="max-h-full max-w-full object-contain"
           />

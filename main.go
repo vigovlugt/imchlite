@@ -94,6 +94,18 @@ func main() {
 		log.Fatalf("init migrations: %v", err)
 	}
 
+	// ffmpeg serves both the indexer's thumbnails and the api's previews.
+	start = time.Now()
+	ffmpegDir, err := ffmpeg.Setup()
+	if err != nil {
+		log.Fatalf("extract ffmpeg: %v", err)
+	}
+	log.Printf("debug: extracted ffmpeg in %s", time.Since(start))
+	f, err := ffmpeg.New(ffmpegDir)
+	if err != nil {
+		log.Fatalf("start ffmpeg: %v", err)
+	}
+
 	assetRepo := repository.NewAsset(db)
 	state := library.NewIndexerState()
 	queue := library.NewQueue()
@@ -102,13 +114,6 @@ func main() {
 	if *serveOnly {
 		state.Complete()
 	} else {
-		start = time.Now()
-		ffmpegDir, err := ffmpeg.Setup()
-		if err != nil {
-			log.Fatalf("extract ffmpeg: %v", err)
-		}
-		log.Printf("debug: extracted ffmpeg in %s", time.Since(start))
-
 		start = time.Now()
 		exiftoolDir, err := exiftoolbin.Setup()
 		if err != nil {
@@ -127,11 +132,6 @@ func main() {
 		}
 		defer clip.Close()
 		log.Printf("debug: downloaded clip visual model in %s", time.Since(start))
-
-		f, err := ffmpeg.New(ffmpegDir)
-		if err != nil {
-			log.Fatalf("start ffmpeg: %v", err)
-		}
 
 		fileRepo := repository.NewFileRepository(db)
 		disk := disk.New()
@@ -160,7 +160,7 @@ func main() {
 		}
 	}
 
-	srv := api.NewServer(*addr, state, assetRepo, libraryDir, dataDir, textual, frontendHandler())
+	srv := api.NewServer(*addr, state, assetRepo, libraryDir, dataDir, textual, f, frontendHandler())
 	if err := api.RunServer(ctx, srv, !*noBrowser); err != nil {
 		log.Printf("serve: %v", err)
 		return
