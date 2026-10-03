@@ -96,14 +96,17 @@ type processor struct {
 	files      *repository.File
 	assets     *repository.Asset
 	clip       *ai.ClipVisual
+	// excludes are the library paths the indexer skips.
+	excludes Excludes
 	// retryFailed makes failed steps run again, like pending ones.
 	retryFailed bool
 }
 
 // NewProcessor creates a processor sharing the given repositories, the
 // extracted ffmpeg binary, the library's disk lock and the clip model. With
-// retryFailed, steps that failed in a previous run are run again.
-func NewProcessor(ctx context.Context, libraryDir, dataDir string, ff *ffmpeg.FFmpeg, d *disk.Disk, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
+// retryFailed, steps that failed in a previous run are run again. Paths
+// matching excludes are not indexed.
+func NewProcessor(ctx context.Context, libraryDir, dataDir string, excludes Excludes, ff *ffmpeg.FFmpeg, d *disk.Disk, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
 	return &processor{
 		ctx:         ctx,
 		libraryDir:  libraryDir,
@@ -113,6 +116,7 @@ func NewProcessor(ctx context.Context, libraryDir, dataDir string, ff *ffmpeg.FF
 		files:       files,
 		assets:      assets,
 		clip:        clip,
+		excludes:    excludes,
 		retryFailed: retryFailed,
 	}
 }
@@ -135,7 +139,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 		switch task := t.(type) {
 		case indexTask:
 			log.Printf("indexing library %s", p.libraryDir)
-			if err := IndexLibrary(p.ctx, p.libraryDir, p.dataDir, p.disk, p.files, q, state); err != nil {
+			if err := IndexLibrary(p.ctx, p.libraryDir, p.dataDir, p.excludes, p.disk, p.files, q, state); err != nil {
 				log.Printf("indexing failed: %v", err)
 				continue
 			}

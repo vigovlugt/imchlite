@@ -145,10 +145,10 @@ const upsertBatchSize = 1000
 // indexer state. The walk holds the disk lock throughout, so processing of
 // the files it enqueues waits for it instead of making the disk seek
 // between directory reads and file reads. The data dir is skipped when it
-// lies inside the library.
-func IndexLibrary(ctx context.Context, libraryDir, dataDir string, d *disk.Disk, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
+// lies inside the library, as are paths matching excludes.
+func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes Excludes, d *disk.Disk, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
 	_, err := d.Do(ctx, func() error {
-		return walkLibrary(ctx, libraryDir, dataDir, fileRepo, queue, state)
+		return walkLibrary(ctx, libraryDir, dataDir, excludes, fileRepo, queue, state)
 	})
 	if err != nil {
 		state.fail(err)
@@ -158,7 +158,7 @@ func IndexLibrary(ctx context.Context, libraryDir, dataDir string, d *disk.Disk,
 	return nil
 }
 
-func walkLibrary(ctx context.Context, libraryDir, dataDir string, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
+func walkLibrary(ctx context.Context, libraryDir, dataDir string, excludes Excludes, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
 	existingFiles, err := fileRepo.GetAll(ctx)
 	if err != nil {
 		return fmt.Errorf("snapshot files: %w", err)
@@ -235,8 +235,27 @@ func walkLibrary(ctx context.Context, libraryDir, dataDir string, fileRepo *repo
 		return statInfo{inode: inode, size: info.Size(), mtimeS: mtime.Unix(), mtimeNs: int64(mtime.Nanosecond())}, nil
 	}
 
+	// relativize returns path relative to the library, slash-separated.
+	relativize := func(path string) (string, error) {
+		relativePath, err := filepath.Rel(libraryDir, path)
+		if err != nil {
+			return "", fmt.Errorf("relativize %s: %w", path, err)
+		}
+		// Paths are stored and keyed with forward slashes on every platform;
+		// ResolveLibraryPath converts back to OS-native form at I/O boundaries.
+		return filepath.ToSlash(relativePath), nil
+	}
+
 	visitFile := func(path string, entry media.DirEntry) error {
 		if !media.IsMediaPath(path) {
+			return nil
+		}
+
+		relativePath, err := relativize(path)
+		if err != nil {
+			return err
+		}
+		if excludes.Match(relativePath) {
 			return nil
 		}
 
@@ -256,13 +275,6 @@ func walkLibrary(ctx context.Context, libraryDir, dataDir string, fileRepo *repo
 		}
 		inode := stat.inode
 
-		relativePath, err := filepath.Rel(libraryDir, path)
-		if err != nil {
-			return fmt.Errorf("relativize %s: %w", path, err)
-		}
-		// Paths are stored and keyed with forward slashes on every platform;
-		// ResolveLibraryPath converts back to OS-native form at I/O boundaries.
-		relativePath = filepath.ToSlash(relativePath)
 		seenPaths[relativePath] = struct{}{}
 
 		if existing, ok := fileByPath[relativePath]; ok && fileStat(existing) == stat && !existing.IsOffline {
@@ -335,6 +347,13 @@ func walkLibrary(ctx context.Context, libraryDir, dataDir string, fileRepo *repo
 				if path == dataDir || e.Name == "@eaDir" || e.Name == "#recycle" || e.Name == "#snapshot" || e.Name == "System Volume Information" || e.Name == "$RECYCLE.BIN" {
 					continue
 				}
+				relativePath, err := relativize(path)
+				if err != nil {
+					return err
+				}
+				if excludes.Match(relativePath) {
+					continue
+				}
 				subdirs = append(subdirs, path)
 				continue
 			}
@@ -367,7 +386,9 @@ func walkLibrary(ctx context.Context, libraryDir, dataDir string, fileRepo *repo
 	offlineFiles := []int64{}
 
 	for path, file := range fileByPath {
-		if file.IsOffline {
+		// Excluded files were not walked but are not gone: leave them as
+		// they are.
+		if file.IsOffline || excludes.Match(path) {
 			continue
 		}
 		if _, ok := seenPaths[path]; !ok {

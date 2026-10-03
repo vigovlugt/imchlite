@@ -32,6 +32,11 @@ func main() {
 	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
 	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip) that failed in a previous run")
 	serveOnly := flag.Bool("serve-only", false, "only run the api server; do not index the library or process assets")
+	var excludes library.Excludes
+	flag.Func("exclude", "glob of library paths or names to skip while indexing, e.g. \"*.mov\" or \"Directory\" (repeatable)", func(v string) error {
+		excludes = append(excludes, v)
+		return nil
+	})
 	flag.Parse()
 
 	if *libraryDirFlag == "" {
@@ -130,7 +135,7 @@ func main() {
 
 		fileRepo := repository.NewFileRepository(db)
 		disk := disk.New()
-		processor := library.NewProcessor(ctx, libraryDir, dataDir, f, disk, fileRepo, assetRepo, clip, *retryFailed)
+		processor := library.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 
 		library.EnqueueIndexTask(queue)
 
