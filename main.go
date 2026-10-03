@@ -111,6 +111,8 @@ func main() {
 	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip, queue)
 	state := library.NewIndexerState()
 
+	library.EnqueueIndexTask(queue)
+
 	// Clip tasks live only in memory; a row in asset_clip_embeddings is the
 	// durable marker. Re-derive any tasks lost by a previous restart.
 	if n, err := library.EnqueuePendingClipTasks(ctx, assetRepo, queue); err != nil {
@@ -132,28 +134,17 @@ func main() {
 		})
 	}
 
-	var indexWG sync.WaitGroup
-	indexWG.Go(func() {
-		log.Printf("indexing library %s", libraryLocation)
-		if err := library.IndexLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
-			log.Printf("indexing failed: %v", err)
-		} else {
-			log.Printf("indexing completed")
-		}
-	})
-
 	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, textual, frontendHandler())
 	if err := api.RunServer(ctx, srv); err != nil {
 		log.Printf("serve: %v", err)
 		return
 	}
 
-	// Server stopped (signal received): close the queue, canceling the
-	// indexer's walk; workers drain the queue and exit. Pushes racing the
+	// Server stopped (signal received): the canceled context stops an
+	// in-progress walk; close the queue so workers drain it and exit. Pushes racing the
 	// close are no-ops — any task dropped that way stays pending in the
 	// database and is re-enqueued on the next startup. The extracted
 	// ffmpeg/exiftool/clip cache stays on disk for the next run.
 	queue.Close()
-	indexWG.Wait()
 	wg.Wait()
 }

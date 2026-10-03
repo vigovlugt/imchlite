@@ -31,14 +31,26 @@ type clipTask struct {
 	Checksum []byte
 }
 
-// assetPriority is the priority assigned to asset tasks. Higher values are
-// processed first; tasks of equal priority keep FIFO order. Clip tasks use
-// a lower priority so asset work always runs first and clip work only
-// consumes idle worker capacity.
+// indexTask walks the library, enqueueing asset tasks for new and changed
+// files.
+type indexTask struct{}
+
+// Task priorities. Higher values are processed first; tasks of equal
+// priority keep FIFO order. Indexing runs before anything else so the
+// library walk is not competing with processing for disk I/O. Clip tasks
+// use the lowest priority so asset work always runs first and clip work
+// only consumes idle worker capacity.
 const (
+	indexPriority = 1
 	assetPriority = 0
 	clipPriority  = -1
 )
+
+// EnqueueIndexTask schedules a walk of the library with the highest
+// priority.
+func EnqueueIndexTask(q *queue.Queue[any]) {
+	q.Push(indexTask{}, indexPriority)
+}
 
 // NewQueue creates the queue the indexer and processor feed and the workers
 // drain. It holds any task type; the processor switches on the concrete
@@ -98,10 +110,19 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 		}
 		if p.ctx.Err() != nil {
 			// Shutting down: drain the queue without touching disk.
-			state.errored.Add(1)
+			if _, ok := t.(assetTask); ok {
+				state.errored.Add(1)
+			}
 			continue
 		}
 		switch task := t.(type) {
+		case indexTask:
+			log.Printf("indexing library %s", p.libraryLocation)
+			if err := IndexLibrary(p.ctx, p.libraryLocation, p.files, q, state); err != nil {
+				log.Printf("indexing failed: %v", err)
+				continue
+			}
+			log.Printf("indexing completed")
 		case assetTask:
 			if err := p.processAsset(task, et); err != nil {
 				log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
