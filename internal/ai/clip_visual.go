@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -121,23 +122,18 @@ type EmbedTimings struct {
 	InferenceMs int64
 }
 
-// Embed returns the embedding for the webp thumbnail at path, along with
-// the per-stage timings. It blocks until the background model load finished.
-func (c *ClipVisual) Embed(ctx context.Context, path string) ([]float32, EmbedTimings, error) {
+// Embed returns the embedding for the webp thumbnail read from r, along
+// with the per-stage timings. It blocks until the background model load
+// finished.
+func (c *ClipVisual) Embed(ctx context.Context, r io.Reader) ([]float32, EmbedTimings, error) {
 	var timings EmbedTimings
 
 	if err := c.WaitLoad(ctx); err != nil {
 		return nil, timings, err
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, timings, err
-	}
-	defer f.Close()
-
 	decodeStart := time.Now()
-	img, err := webp.Decode(f)
+	img, err := webp.Decode(r)
 	if err != nil {
 		return nil, timings, fmt.Errorf("decode thumbnail: %w", err)
 	}

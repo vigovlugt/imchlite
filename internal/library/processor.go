@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vigovlugt/imchlite/internal/ai"
+	"github.com/vigovlugt/imchlite/internal/disk"
 	"github.com/vigovlugt/imchlite/internal/entity"
 	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
 	"github.com/vigovlugt/imchlite/internal/ffmpeg"
@@ -71,6 +72,11 @@ const (
 	// it is streamed from disk instead of buffered in memory.
 	maxInMemoryImageSize = 256 << 20
 	copyBufferSize       = 1 << 20
+	// maxWarmFileSize bounds how large a file may be for its bytes to be
+	// assumed still in the OS page cache right after it was checksummed, so
+	// that exiftool and ffmpeg reading it again skip the disk lock. Parts of
+	// larger files (long videos) may already be evicted by then.
+	maxWarmFileSize = 256 << 20
 )
 
 // pipeableImageExtensions are image formats ffmpeg can demux from a
@@ -85,6 +91,7 @@ type processor struct {
 	ctx             context.Context
 	libraryLocation string
 	ffmpeg          *ffmpeg.FFmpeg
+	disk            *disk.Disk
 	files           *repository.File
 	assets          *repository.Asset
 	clip            *ai.ClipVisual
@@ -93,13 +100,14 @@ type processor struct {
 }
 
 // NewProcessor creates a processor sharing the given repositories, the
-// extracted ffmpeg binary and the clip model. With retryFailed, steps that
-// failed in a previous run are run again.
-func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
+// extracted ffmpeg binary, the library's disk lock and the clip model. With
+// retryFailed, steps that failed in a previous run are run again.
+func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, d *disk.Disk, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
 	return &processor{
 		ctx:             ctx,
 		libraryLocation: libraryLocation,
 		ffmpeg:          ff,
+		disk:            d,
 		files:           files,
 		assets:          assets,
 		clip:            clip,
@@ -125,7 +133,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 		switch task := t.(type) {
 		case indexTask:
 			log.Printf("indexing library %s", p.libraryLocation)
-			if err := IndexLibrary(p.ctx, p.libraryLocation, p.files, q, state); err != nil {
+			if err := IndexLibrary(p.ctx, p.libraryLocation, p.disk, p.files, q, state); err != nil {
 				log.Printf("indexing failed: %v", err)
 				continue
 			}
@@ -138,7 +146,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 			}
 			state.processed.Add(1)
 		case assetTask:
-			if err := p.processAsset(task.Asset, "", nil); err != nil {
+			if err := p.processAsset(task.Asset, "", nil, false); err != nil {
 				log.Printf("process asset=%d: %v", task.Asset.ID, err)
 			}
 		default:
@@ -156,50 +164,66 @@ type processTimings struct {
 	metadataMs int64
 	geoMs      int64
 	dbMs       int64
+	// diskWaitMs is the time spent waiting for the disk lock, excluded
+	// from the other stages.
+	diskWaitMs int64
 }
 
 // processFile checksums a file, stores (or reuses) its asset, and links the
 // file row to the asset. An asset row existing implies its metadata was
 // already extracted. When this task created the asset, the asset task
 // follows immediately, reusing the bytes already read for checksumming.
+//
+// The file is read in full under the disk lock. Afterwards its bytes are in
+// the OS page cache, so unless the file is too large for that to be
+// assumed, the later exiftool and ffmpeg reads run without the lock.
 func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 	started := time.Now()
 
 	absolutePath := media.ResolveLibraryPath(p.libraryLocation, task.Path)
 
-	info, err := os.Stat(absolutePath)
-	if err != nil {
-		return fmt.Errorf("stat %s: %w", absolutePath, err)
-	}
-
-	var timings processTimings
-
-	// Images readable as a stream are read from disk exactly once: the same
-	// bytes feed both the checksum and the thumbnail generation, halving
-	// disk I/O for the common case.
-	var data []byte
-	if ext, ok := media.LowerExtension(task.Path); ok {
-		if _, pipeable := pipeableImageExtensions[ext]; pipeable && info.Size() <= maxInMemoryImageSize {
-			readStart := time.Now()
-			if data, err = os.ReadFile(absolutePath); err != nil {
-				return fmt.Errorf("read %s: %w", absolutePath, err)
-			}
-			timings.readMs = time.Since(readStart).Milliseconds()
+	var (
+		info     os.FileInfo
+		data     []byte
+		checksum []byte
+		timings  processTimings
+	)
+	waited, err := p.disk.Do(p.ctx, func() error {
+		var err error
+		if info, err = os.Stat(absolutePath); err != nil {
+			return fmt.Errorf("stat %s: %w", absolutePath, err)
 		}
-	}
 
-	checksumStart := time.Now()
-	var checksum []byte
-	if data != nil {
-		sum := sha256.Sum256(data)
-		checksum = sum[:]
-	} else {
-		checksum, err = fileChecksum(absolutePath)
-	}
-	timings.checksumMs = time.Since(checksumStart).Milliseconds()
+		// Images readable as a stream are read from disk exactly once: the
+		// same bytes feed both the checksum and the thumbnail generation.
+		if ext, ok := media.LowerExtension(task.Path); ok {
+			if _, pipeable := pipeableImageExtensions[ext]; pipeable && info.Size() <= maxInMemoryImageSize {
+				readStart := time.Now()
+				if data, err = os.ReadFile(absolutePath); err != nil {
+					return fmt.Errorf("read %s: %w", absolutePath, err)
+				}
+				timings.readMs = time.Since(readStart).Milliseconds()
+			}
+		}
+
+		checksumStart := time.Now()
+		if data != nil {
+			sum := sha256.Sum256(data)
+			checksum = sum[:]
+		} else {
+			checksum, err = fileChecksum(absolutePath)
+		}
+		timings.checksumMs = time.Since(checksumStart).Milliseconds()
+		if err != nil {
+			return fmt.Errorf("checksum %s: %w", absolutePath, err)
+		}
+		return nil
+	})
+	timings.diskWaitMs += waited.Milliseconds()
 	if err != nil {
-		return fmt.Errorf("checksum %s: %w", absolutePath, err)
+		return err
 	}
+	warm := info.Size() <= maxWarmFileSize
 
 	dbStart := time.Now()
 	asset, err := p.assets.GetByChecksum(p.ctx, checksum)
@@ -210,7 +234,7 @@ func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 
 	created := false
 	if asset == nil {
-		if asset, created, timings, err = p.createAsset(task, et, absolutePath, checksum, info, timings); err != nil {
+		if asset, created, timings, err = p.createAsset(task, et, absolutePath, checksum, info, warm, timings); err != nil {
 			return err
 		}
 	}
@@ -222,20 +246,30 @@ func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 	timings.dbMs += time.Since(dbStart).Milliseconds()
 
 	log.Printf(
-		"processed file=%d path=%s asset=%d total_ms=%d read_ms=%d checksum_ms=%d metadata_ms=%d geo_ms=%d db_ms=%d",
+		"processed file=%d path=%s asset=%d total_ms=%d disk_wait_ms=%d read_ms=%d checksum_ms=%d metadata_ms=%d geo_ms=%d db_ms=%d",
 		task.FileID, task.Path, asset.ID,
 		time.Since(started).Milliseconds(),
-		timings.readMs, timings.checksumMs, timings.metadataMs, timings.geoMs, timings.dbMs,
+		timings.diskWaitMs, timings.readMs, timings.checksumMs, timings.metadataMs, timings.geoMs, timings.dbMs,
 	)
 
 	if created {
 		// The file is linked, so a failing asset step does not fail the file:
 		// it stays pending or failed in its own status column.
-		if err := p.processAsset(*asset, task.Path, data); err != nil {
+		if err := p.processAsset(*asset, task.Path, data, warm); err != nil {
 			log.Printf("process asset=%d: %v", asset.ID, err)
 		}
 	}
 	return nil
+}
+
+// readDisk runs fn, which reads from the library's disk, under the disk
+// lock unless warm reports that the bytes fn reads are in the page cache.
+// It returns how long it waited for the lock.
+func (p *processor) readDisk(warm bool, fn func() error) (time.Duration, error) {
+	if warm {
+		return 0, fn()
+	}
+	return p.disk.Do(p.ctx, fn)
 }
 
 // shouldRun reports whether a step with the given status needs to run.
@@ -246,10 +280,14 @@ func (p *processor) shouldRun(status entity.TaskStatus) bool {
 // processAsset runs the asset's pending steps in order, skipping the ones
 // whose status is already ok, or failed unless failed steps are retried. path and data are the file the
 // asset was just created from and its bytes when already read; with an
-// empty path an online file of the asset is looked up. A step interrupted
-// by shutdown or a model that failed to load stays pending, to be retried
-// on the next startup.
-func (p *processor) processAsset(asset entity.Asset, path string, data []byte) error {
+// empty path an online file of the asset is looked up. warm reports that
+// the file at path was just read and is in the page cache, so reading it
+// again does not take the disk lock. A step interrupted by shutdown or a
+// model that failed to load stays pending, to be retried on the next
+// startup.
+func (p *processor) processAsset(asset entity.Asset, path string, data []byte, warm bool) error {
+	// A thumbnail created here was just written, so it is in the page cache.
+	thumbnailWarm := false
 	if p.shouldRun(asset.ThumbnailStatus) {
 		if path == "" {
 			var err error
@@ -260,7 +298,10 @@ func (p *processor) processAsset(asset entity.Asset, path string, data []byte) e
 
 		started := time.Now()
 		absolutePath := media.ResolveLibraryPath(p.libraryLocation, path)
-		if err := p.createThumbnail(asset.Checksum, absolutePath, data); err != nil {
+		waited, err := p.readDisk(warm, func() error {
+			return p.createThumbnail(asset.Checksum, absolutePath, data)
+		})
+		if err != nil {
 			if p.ctx.Err() != nil {
 				return fmt.Errorf("thumbnail for %s: %w", path, err)
 			}
@@ -268,11 +309,12 @@ func (p *processor) processAsset(asset entity.Asset, path string, data []byte) e
 			asset.ThumbnailStatus = entity.TaskStatusFailed
 		} else {
 			asset.ThumbnailStatus = entity.TaskStatusOK
+			thumbnailWarm = true
 		}
 		if err := p.assets.SetThumbnailStatus(p.ctx, asset.ID, asset.ThumbnailStatus); err != nil {
 			return err
 		}
-		log.Printf("thumbnailed asset=%d path=%s total_ms=%d", asset.ID, path, time.Since(started).Milliseconds())
+		log.Printf("thumbnailed asset=%d path=%s total_ms=%d disk_wait_ms=%d", asset.ID, path, time.Since(started).Milliseconds(), waited.Milliseconds())
 	}
 
 	if p.shouldRun(asset.ClipStatus) {
@@ -283,7 +325,7 @@ func (p *processor) processAsset(asset entity.Asset, path string, data []byte) e
 			}
 			return p.assets.SetClipStatus(p.ctx, asset.ID, entity.TaskStatusFailed)
 		}
-		if err := p.processClip(asset); err != nil {
+		if err := p.processClip(asset, thumbnailWarm); err != nil {
 			return err
 		}
 	}
@@ -292,14 +334,30 @@ func (p *processor) processAsset(asset entity.Asset, path string, data []byte) e
 
 // processClip embeds the asset's thumbnail with the clip model and marks the
 // asset's clip step ok, or failed when the thumbnail cannot be embedded.
-func (p *processor) processClip(asset entity.Asset) error {
+// thumbnailWarm reports that the thumbnail was just written and is in the
+// page cache, so reading it does not take the disk lock.
+func (p *processor) processClip(asset entity.Asset, thumbnailWarm bool) error {
 	if err := p.clip.WaitLoad(p.ctx); err != nil {
 		return fmt.Errorf("clip model: %w", err)
 	}
 
 	started := time.Now()
 
-	embedding, timings, err := p.clip.Embed(p.ctx, thumbnailPath(p.libraryLocation, asset.Checksum))
+	var thumbnail []byte
+	waited, err := p.readDisk(thumbnailWarm, func() error {
+		var err error
+		thumbnail, err = os.ReadFile(thumbnailPath(p.libraryLocation, asset.Checksum))
+		return err
+	})
+	if err != nil {
+		if p.ctx.Err() != nil {
+			return fmt.Errorf("read thumbnail: %w", err)
+		}
+		log.Printf("clip asset=%d: read thumbnail: %v", asset.ID, err)
+		return p.assets.SetClipStatus(p.ctx, asset.ID, entity.TaskStatusFailed)
+	}
+
+	embedding, timings, err := p.clip.Embed(p.ctx, bytes.NewReader(thumbnail))
 	if err != nil {
 		if p.ctx.Err() != nil {
 			return fmt.Errorf("embed thumbnail: %w", err)
@@ -313,9 +371,10 @@ func (p *processor) processClip(asset entity.Asset) error {
 	}
 
 	log.Printf(
-		"clipped asset=%d dim=%d total_ms=%d decode_ms=%d transform_ms=%d inference_ms=%d",
+		"clipped asset=%d dim=%d total_ms=%d disk_wait_ms=%d decode_ms=%d transform_ms=%d inference_ms=%d",
 		asset.ID, len(embedding),
 		time.Since(started).Milliseconds(),
+		waited.Milliseconds(),
 		timings.DecodeMs, timings.TransformMs, timings.InferenceMs,
 	)
 	return nil
@@ -341,10 +400,16 @@ func EnqueuePendingAssetTasks(ctx context.Context, assets *repository.Asset, q *
 // content first; the asset is re-fetched by checksum so the row with the
 // canonical id is returned, and created reports whether this call inserted
 // it.
-func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, timings processTimings) (asset *entity.Asset, created bool, _ processTimings, _ error) {
+func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, warm bool, timings processTimings) (asset *entity.Asset, created bool, _ processTimings, _ error) {
 	metadataStart := time.Now()
-	meta, err := et.ProbeMetadata(absolutePath)
-	timings.metadataMs = time.Since(metadataStart).Milliseconds()
+	var meta exiftoolbin.MediaMetadata
+	waited, err := p.readDisk(warm, func() error {
+		var err error
+		meta, err = et.ProbeMetadata(absolutePath)
+		return err
+	})
+	timings.metadataMs = (time.Since(metadataStart) - waited).Milliseconds()
+	timings.diskWaitMs += waited.Milliseconds()
 	if err != nil {
 		return nil, false, timings, fmt.Errorf("probe metadata: %w", err)
 	}
@@ -374,7 +439,15 @@ func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolut
 		Orientation:    meta.Orientation,
 	}
 
-	applySidecars(p.libraryLocation, task.Path, asset)
+	// Sidecars are separate files, not warmed by reading the media file.
+	waited, err = p.disk.Do(p.ctx, func() error {
+		applySidecars(p.libraryLocation, task.Path, asset)
+		return nil
+	})
+	timings.diskWaitMs += waited.Milliseconds()
+	if err != nil {
+		return nil, false, timings, err
+	}
 
 	geoStart := time.Now()
 	err = applyCityCountry(asset, et)

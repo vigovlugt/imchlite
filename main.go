@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/api"
 	"github.com/vigovlugt/imchlite/internal/database"
+	"github.com/vigovlugt/imchlite/internal/disk"
 	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
 	"github.com/vigovlugt/imchlite/internal/ffmpeg"
 	"github.com/vigovlugt/imchlite/internal/library"
@@ -25,7 +27,7 @@ import (
 func main() {
 	libraryLocationFlag := flag.String("library-location", "", "path to the imchlite library")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
-	workers := flag.Int("workers", 1, "number of parallel asset processors")
+	workers := flag.Int("workers", runtime.NumCPU(), "number of parallel asset processors")
 	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
 	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip) that failed in a previous run")
 	flag.Parse()
@@ -110,7 +112,8 @@ func main() {
 	fileRepo := repository.NewFileRepository(db)
 	assetRepo := repository.NewAsset(db)
 	queue := library.NewQueue()
-	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip, *retryFailed)
+	disk := disk.New()
+	processor := library.NewProcessor(ctx, libraryLocation, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 	state := library.NewIndexerState()
 
 	library.EnqueueIndexTask(queue)

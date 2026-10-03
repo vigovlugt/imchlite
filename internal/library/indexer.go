@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vigovlugt/imchlite/internal/disk"
 	"github.com/vigovlugt/imchlite/internal/entity"
 	"github.com/vigovlugt/imchlite/internal/media"
 	"github.com/vigovlugt/imchlite/internal/queue"
@@ -109,9 +110,14 @@ func fileStat(f entity.File) statInfo {
 }
 
 // IndexLibrary walks the library and records the run's outcome in the given
-// indexer state.
-func IndexLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
-	if err := walkLibrary(ctx, libraryLocation, fileRepo, queue, state); err != nil {
+// indexer state. The walk holds the disk lock throughout, so processing of
+// the files it enqueues waits for it instead of making the disk seek
+// between directory reads and file reads.
+func IndexLibrary(ctx context.Context, libraryLocation string, d *disk.Disk, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
+	_, err := d.Do(ctx, func() error {
+		return walkLibrary(ctx, libraryLocation, fileRepo, queue, state)
+	})
+	if err != nil {
 		state.fail(err)
 		return err
 	}
