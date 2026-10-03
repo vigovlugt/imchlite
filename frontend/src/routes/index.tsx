@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  keepPreviousData,
   useInfiniteQuery,
   useQuery,
 } from "@tanstack/react-query";
@@ -200,7 +199,6 @@ function Home() {
     queryFn: ({ pageParam, signal }) => fetchAssets(filters, pageParam, signal),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor,
-    placeholderData: keepPreviousData,
   });
 
   const assets = useMemo(
@@ -244,7 +242,6 @@ function Home() {
     filters.until !== undefined;
 
   const similarityMode = search.context_query !== undefined;
-  const showStaleResults = similarityMode && assetsQuery.isPlaceholderData;
 
   return (
     <SidebarProvider>
@@ -272,7 +269,7 @@ function Home() {
         </header>
 
         <div className="flex-1 overflow-y-auto">
-          {assetsQuery.isPending || showStaleResults ? (
+          {assetsQuery.isPending ? (
             <div className="grid gap-0.5 px-6 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
               {Array.from({ length: 24 }, (_, i) => (
                 <Skeleton key={i} className="aspect-square" />
