@@ -108,17 +108,17 @@ func main() {
 	fileRepo := repository.NewFileRepository(db)
 	assetRepo := repository.NewAsset(db)
 	queue := library.NewQueue()
-	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip, queue)
+	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip)
 	state := library.NewIndexerState()
 
 	library.EnqueueIndexTask(queue)
 
-	// Clip tasks live only in memory; a row in asset_clip_embeddings is the
+	// Asset tasks live only in memory; the per-step status columns are the
 	// durable marker. Re-derive any tasks lost by a previous restart.
-	if n, err := library.EnqueuePendingClipTasks(ctx, assetRepo, queue); err != nil {
-		log.Fatalf("recover pending clip tasks: %v", err)
+	if n, err := library.EnqueuePendingAssetTasks(ctx, assetRepo, queue); err != nil {
+		log.Fatalf("recover pending asset tasks: %v", err)
 	} else if n > 0 {
-		log.Printf("re-enqueued %d pending clip tasks", n)
+		log.Printf("re-enqueued %d pending asset tasks", n)
 	}
 
 	var wg sync.WaitGroup

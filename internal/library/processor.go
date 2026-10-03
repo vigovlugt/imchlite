@@ -21,14 +21,17 @@ import (
 	"github.com/vigovlugt/imchlite/internal/utils"
 )
 
-type assetTask struct {
+// fileTask checksums a file and links it to its (possibly new) asset.
+type fileTask struct {
 	FileID int64
 	Path   string
 }
 
-type clipTask struct {
-	AssetID  int64
-	Checksum []byte
+// assetTask runs the asset's pending processing steps (thumbnail, then
+// clip). Each step's outcome is stored in its own status column, so a task
+// re-enqueued at startup skips the steps that already finished.
+type assetTask struct {
+	Asset entity.Asset
 }
 
 // indexTask walks the library, enqueueing asset tasks for new and changed
@@ -37,13 +40,15 @@ type indexTask struct{}
 
 // Task priorities. Higher values are processed first; tasks of equal
 // priority keep FIFO order. Indexing runs before anything else so the
-// library walk is not competing with processing for disk I/O. Clip tasks
-// use the lowest priority so asset work always runs first and clip work
-// only consumes idle worker capacity.
+// library walk is not competing with processing for disk I/O. Asset tasks
+// are only queued when recovering work from a previous run; a file task
+// that creates an asset runs its asset task inline instead. They use the
+// lowest priority so new files are linked first and recovered work only
+// consumes idle worker capacity.
 const (
 	indexPriority = 1
-	assetPriority = 0
-	clipPriority  = -1
+	filePriority  = 0
+	assetPriority = -1
 )
 
 // EnqueueIndexTask schedules a walk of the library with the highest
@@ -83,12 +88,11 @@ type processor struct {
 	files           *repository.File
 	assets          *repository.Asset
 	clip            *ai.ClipVisual
-	queue           *queue.Queue[any]
 }
 
 // NewProcessor creates a processor sharing the given repositories, the
-// extracted ffmpeg binary, the clip model and the task queue.
-func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, q *queue.Queue[any]) *processor {
+// extracted ffmpeg binary and the clip model.
+func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual) *processor {
 	return &processor{
 		ctx:             ctx,
 		libraryLocation: libraryLocation,
@@ -96,7 +100,6 @@ func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg
 		files:           files,
 		assets:          assets,
 		clip:            clip,
-		queue:           q,
 	}
 }
 
@@ -110,7 +113,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 		}
 		if p.ctx.Err() != nil {
 			// Shutting down: drain the queue without touching disk.
-			if _, ok := t.(assetTask); ok {
+			if _, ok := t.(fileTask); ok {
 				state.errored.Add(1)
 			}
 			continue
@@ -123,19 +126,16 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 				continue
 			}
 			log.Printf("indexing completed")
-		case assetTask:
-			if err := p.processAsset(task, et); err != nil {
+		case fileTask:
+			if err := p.processFile(task, et); err != nil {
 				log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
 				state.errored.Add(1)
 				continue
 			}
 			state.processed.Add(1)
-		case clipTask:
-			if err := p.processClip(task); err != nil {
-				// The asset has no clip embedding row yet, so the task is
-				// re-enqueued on the next startup.
-				log.Printf("clip asset=%d: %v", task.AssetID, err)
-				continue
+		case assetTask:
+			if err := p.processAsset(task.Asset, "", nil); err != nil {
+				log.Printf("process asset=%d: %v", task.Asset.ID, err)
 			}
 		default:
 			log.Printf("unknown task type %T", t)
@@ -150,16 +150,15 @@ type processTimings struct {
 	readMs     int64
 	checksumMs int64
 	metadataMs int64
-	thumbMs    int64
 	geoMs      int64
 	dbMs       int64
 }
 
-// processAsset checksums a file, stores (or reuses) its asset, and links the
-// file row to the asset. An asset row existing implies its metadata and
-// thumbnail were already extracted. On success a clip task is enqueued for
-// the asset's thumbnail.
-func (p *processor) processAsset(task assetTask, et *exiftoolbin.Exiftool) error {
+// processFile checksums a file, stores (or reuses) its asset, and links the
+// file row to the asset. An asset row existing implies its metadata was
+// already extracted. When this task created the asset, the asset task
+// follows immediately, reusing the bytes already read for checksumming.
+func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 	started := time.Now()
 
 	absolutePath := media.ResolveLibraryPath(p.libraryLocation, task.Path)
@@ -205,8 +204,9 @@ func (p *processor) processAsset(task assetTask, et *exiftoolbin.Exiftool) error
 		return fmt.Errorf("lookup asset by checksum: %w", err)
 	}
 
+	created := false
 	if asset == nil {
-		if asset, timings, err = p.createAsset(task, et, absolutePath, checksum, info, data, timings); err != nil {
+		if asset, created, timings, err = p.createAsset(task, et, absolutePath, checksum, info, timings); err != nil {
 			return err
 		}
 	}
@@ -217,67 +217,123 @@ func (p *processor) processAsset(task assetTask, et *exiftoolbin.Exiftool) error
 	}
 	timings.dbMs += time.Since(dbStart).Milliseconds()
 
-	if asset.ThumbnailStatus == entity.ThumbnailStatusOK {
-		p.queue.Push(clipTask{AssetID: asset.ID, Checksum: asset.Checksum}, clipPriority)
-	}
-
 	log.Printf(
-		"processed file=%d path=%s asset=%d total_ms=%d read_ms=%d checksum_ms=%d metadata_ms=%d thumbnail_ms=%d geo_ms=%d db_ms=%d",
+		"processed file=%d path=%s asset=%d total_ms=%d read_ms=%d checksum_ms=%d metadata_ms=%d geo_ms=%d db_ms=%d",
 		task.FileID, task.Path, asset.ID,
 		time.Since(started).Milliseconds(),
-		timings.readMs, timings.checksumMs, timings.metadataMs, timings.thumbMs, timings.geoMs, timings.dbMs,
+		timings.readMs, timings.checksumMs, timings.metadataMs, timings.geoMs, timings.dbMs,
 	)
+
+	if created {
+		// The file is linked, so a failing asset step does not fail the file:
+		// it stays pending or failed in its own status column.
+		if err := p.processAsset(*asset, task.Path, data); err != nil {
+			log.Printf("process asset=%d: %v", asset.ID, err)
+		}
+	}
+	return nil
+}
+
+// processAsset runs the asset's pending steps in order, skipping the ones
+// whose status is already ok or failed. path and data are the file the
+// asset was just created from and its bytes when already read; with an
+// empty path an online file of the asset is looked up. A step interrupted
+// by shutdown or a model that failed to load stays pending, to be retried
+// on the next startup.
+func (p *processor) processAsset(asset entity.Asset, path string, data []byte) error {
+	if asset.ThumbnailStatus == entity.TaskStatusPending {
+		if path == "" {
+			var err error
+			if path, _, err = p.assets.LiveFileForChecksum(p.ctx, asset.Checksum); err != nil {
+				return fmt.Errorf("find file for asset: %w", err)
+			}
+		}
+
+		started := time.Now()
+		absolutePath := media.ResolveLibraryPath(p.libraryLocation, path)
+		if err := p.createThumbnail(asset.Checksum, absolutePath, data); err != nil {
+			if p.ctx.Err() != nil {
+				return fmt.Errorf("thumbnail for %s: %w", path, err)
+			}
+			log.Printf("thumbnail for %s: %v", path, err)
+			asset.ThumbnailStatus = entity.TaskStatusFailed
+		} else {
+			asset.ThumbnailStatus = entity.TaskStatusOK
+		}
+		if err := p.assets.SetThumbnailStatus(p.ctx, asset.ID, asset.ThumbnailStatus); err != nil {
+			return err
+		}
+		log.Printf("thumbnailed asset=%d path=%s total_ms=%d", asset.ID, path, time.Since(started).Milliseconds())
+	}
+
+	if asset.ClipStatus == entity.TaskStatusPending {
+		if asset.ThumbnailStatus == entity.TaskStatusFailed {
+			// Without a thumbnail there is nothing to embed.
+			return p.assets.SetClipStatus(p.ctx, asset.ID, entity.TaskStatusFailed)
+		}
+		if err := p.processClip(asset); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 // processClip embeds the asset's thumbnail with the clip model and marks the
-// asset embedded. Failures are recoverable: the asset keeps
-// clip embedding row and the task is re-enqueued on the next startup.
-func (p *processor) processClip(task clipTask) error {
-	started := time.Now()
-
-	embedding, timings, err := p.clip.Embed(p.ctx, thumbnailPath(p.libraryLocation, task.Checksum))
-	if err != nil {
-		return fmt.Errorf("embed thumbnail: %w", err)
+// asset's clip step ok, or failed when the thumbnail cannot be embedded.
+func (p *processor) processClip(asset entity.Asset) error {
+	if err := p.clip.WaitLoad(p.ctx); err != nil {
+		return fmt.Errorf("clip model: %w", err)
 	}
 
-	if err := p.assets.InsertClipEmbedding(p.ctx, task.AssetID, utils.EncodeEmbedding(embedding)); err != nil {
+	started := time.Now()
+
+	embedding, timings, err := p.clip.Embed(p.ctx, thumbnailPath(p.libraryLocation, asset.Checksum))
+	if err != nil {
+		if p.ctx.Err() != nil {
+			return fmt.Errorf("embed thumbnail: %w", err)
+		}
+		log.Printf("clip asset=%d: embed thumbnail: %v", asset.ID, err)
+		return p.assets.SetClipStatus(p.ctx, asset.ID, entity.TaskStatusFailed)
+	}
+
+	if err := p.assets.InsertClipEmbedding(p.ctx, asset.ID, utils.EncodeEmbedding(embedding)); err != nil {
 		return err
 	}
 
 	log.Printf(
 		"clipped asset=%d dim=%d total_ms=%d decode_ms=%d transform_ms=%d inference_ms=%d",
-		task.AssetID, len(embedding),
+		asset.ID, len(embedding),
 		time.Since(started).Milliseconds(),
 		timings.DecodeMs, timings.TransformMs, timings.InferenceMs,
 	)
 	return nil
 }
 
-// EnqueuePendingClipTasks re-adds clip tasks for assets that were indexed
-// with a thumbnail but never embedded, e.g. because the process restarted
-// while tasks were still queued. It returns the number of tasks enqueued.
-func EnqueuePendingClipTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any]) (int, error) {
-	pending, err := assets.GetAssetsWithoutClipEmbedding(ctx)
+// EnqueuePendingAssetTasks re-adds asset tasks for assets with a pending
+// step, e.g. because the process restarted mid-task. It returns the number
+// of tasks enqueued.
+func EnqueuePendingAssetTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any]) (int, error) {
+	pending, err := assets.GetAssetsWithPendingTasks(ctx)
 	if err != nil {
 		return 0, err
 	}
 	for _, a := range pending {
-		q.Push(clipTask{AssetID: a.ID, Checksum: a.Checksum}, clipPriority)
+		q.Push(assetTask{Asset: a}, assetPriority)
 	}
 	return len(pending), nil
 }
 
-// createAsset probes the file's metadata, extracts the thumbnail and inserts
-// its asset row. A concurrent worker may have stored the same content first;
-// the asset is re-fetched by checksum so the row with the canonical id is
-// returned.
-func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, data []byte, timings processTimings) (*entity.Asset, processTimings, error) {
+// createAsset probes the file's metadata and inserts its asset row with all
+// processing steps pending. A concurrent worker may have stored the same
+// content first; the asset is re-fetched by checksum so the row with the
+// canonical id is returned, and created reports whether this call inserted
+// it.
+func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, timings processTimings) (asset *entity.Asset, created bool, _ processTimings, _ error) {
 	metadataStart := time.Now()
 	meta, err := et.ProbeMetadata(absolutePath)
 	timings.metadataMs = time.Since(metadataStart).Milliseconds()
 	if err != nil {
-		return nil, timings, fmt.Errorf("probe metadata: %w", err)
+		return nil, false, timings, fmt.Errorf("probe metadata: %w", err)
 	}
 
 	mimeType := meta.MimeType
@@ -286,7 +342,7 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 	}
 
 	mtime := info.ModTime().Unix()
-	asset := &entity.Asset{
+	asset = &entity.Asset{
 		Checksum:       checksum,
 		MimeType:       mimeType,
 		Type:           media.TypeFromPath(task.Path),
@@ -314,26 +370,19 @@ func (p *processor) createAsset(task assetTask, et *exiftoolbin.Exiftool, absolu
 	}
 	timings.geoMs = time.Since(geoStart).Milliseconds()
 
-	thumbStart := time.Now()
-	if err := p.createThumbnail(checksum, absolutePath, data); err != nil {
-		log.Printf("thumbnail for %s: %v", task.Path, err)
-		asset.ThumbnailStatus = entity.ThumbnailStatusFailed
-	}
-	timings.thumbMs = time.Since(thumbStart).Milliseconds()
-
 	insertStart := time.Now()
-	if err := p.assets.Insert(p.ctx, asset); err != nil {
-		return nil, timings, fmt.Errorf("store asset for %s: %w", task.Path, err)
+	created, err = p.assets.Insert(p.ctx, asset)
+	if err != nil {
+		return nil, false, timings, fmt.Errorf("store asset for %s: %w", task.Path, err)
 	}
 
 	stored, err := p.assets.GetByChecksum(p.ctx, checksum)
-	if err != nil {
-		timings.dbMs += time.Since(insertStart).Milliseconds()
-		return nil, timings, fmt.Errorf("lookup asset by checksum: %w", err)
-	}
 	timings.dbMs += time.Since(insertStart).Milliseconds()
+	if err != nil {
+		return nil, false, timings, fmt.Errorf("lookup asset by checksum: %w", err)
+	}
 
-	return stored, timings, nil
+	return stored, created, timings, nil
 }
 
 func (p *processor) createThumbnail(checksum []byte, absolutePath string, data []byte) error {

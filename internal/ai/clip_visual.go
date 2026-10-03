@@ -92,8 +92,9 @@ func NewClipVisual(dir string) (*ClipVisual, error) {
 	return c, nil
 }
 
-// waitLoad blocks until the background model load finished, or ctx is done.
-func (c *ClipVisual) waitLoad(ctx context.Context) error {
+// WaitLoad blocks until the background model load finished, or ctx is done.
+// It returns the load error, if any.
+func (c *ClipVisual) WaitLoad(ctx context.Context) error {
 	select {
 	case <-c.ready:
 		return c.loadErr
@@ -125,7 +126,7 @@ type EmbedTimings struct {
 func (c *ClipVisual) Embed(ctx context.Context, path string) ([]float32, EmbedTimings, error) {
 	var timings EmbedTimings
 
-	if err := c.waitLoad(ctx); err != nil {
+	if err := c.WaitLoad(ctx); err != nil {
 		return nil, timings, err
 	}
 

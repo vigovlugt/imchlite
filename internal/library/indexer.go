@@ -191,7 +191,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 
 		if existing, ok := fileByPath[relativePath]; ok && fileStat(existing) == stat && !existing.IsOffline {
 			if existing.AssetID == nil {
-				queue.Push(assetTask{FileID: existing.ID, Path: relativePath}, assetPriority)
+				queue.Push(fileTask{FileID: existing.ID, Path: relativePath}, filePriority)
 			} else {
 				state.skipped.Add(1)
 				state.processed.Add(1)
@@ -221,8 +221,8 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 			return fmt.Errorf("upsert %s: %w", relativePath, err)
 		}
 		if assetID == nil {
-			// The row has no asset yet; notify the asset worker.
-			queue.Push(assetTask{FileID: fileID, Path: relativePath}, assetPriority)
+			// The row has no asset yet; enqueue a file task.
+			queue.Push(fileTask{FileID: fileID, Path: relativePath}, filePriority)
 		} else {
 			// The moved file's content is unchanged and already has an
 			// asset, so no processing is needed.

@@ -14,6 +14,28 @@ type migration struct {
 var migrations = []migration{
 	{version: 1, up: migration001},
 	{version: 2, up: migration002},
+	{version: 3, up: migration003},
+}
+
+// migration003 gives every asset processing step a status column so the
+// asset task can resume where it left off: 0 = pending, 1 = ok,
+// 2 = failed. thumbnail_status is remapped from its old 0 = ok, 1 = failed
+// encoding; its column default of 0 now means pending. An asset whose
+// thumbnail failed cannot be embedded, so its clip step is failed too.
+func migration003(tx *sql.Tx) error {
+	statements := []string{
+		`update assets set thumbnail_status = case thumbnail_status when 0 then 1 else 2 end`,
+		`alter table assets add column clip_status integer not null default 0`,
+		`update assets set clip_status = 1
+		 where exists (select 1 from asset_clip_embeddings e where e.asset_id = assets.id)`,
+		`update assets set clip_status = 2 where thumbnail_status = 2`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("migration003: %w", err)
+		}
+	}
+	return nil
 }
 
 // migration002 adds the clip embedding pipeline. asset_clip_embeddings

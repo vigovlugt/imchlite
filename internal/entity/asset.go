@@ -8,12 +8,14 @@ const (
 	AssetTypeVideo AssetType = 1
 )
 
-// ThumbnailStatus: 0 = ok, 1 = failed
-type ThumbnailStatus int
+// TaskStatus is the progress of one asset processing step: 0 = pending,
+// 1 = ok, 2 = failed.
+type TaskStatus int
 
 const (
-	ThumbnailStatusOK     ThumbnailStatus = 0
-	ThumbnailStatusFailed ThumbnailStatus = 1
+	TaskStatusPending TaskStatus = 0
+	TaskStatusOK      TaskStatus = 1
+	TaskStatusFailed  TaskStatus = 2
 )
 
 // Asset mirrors the asset table in migration001.
@@ -53,7 +55,10 @@ type Asset struct {
 	Orientation int64
 
 	// ThumbnailStatus records whether the webp thumbnail was generated.
-	ThumbnailStatus ThumbnailStatus
+	ThumbnailStatus TaskStatus
+	// ClipStatus records whether the clip embedding of the thumbnail was
+	// stored.
+	ClipStatus TaskStatus
 
 	// Thumbhash []byte
 

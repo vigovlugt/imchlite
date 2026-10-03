@@ -29,9 +29,9 @@ func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Ass
 		width, height, durationMs sql.NullInt64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`select id, mime_type, type, width, height, duration_ms, thumbnail_status
+		`select id, mime_type, type, width, height, duration_ms, thumbnail_status, clip_status
 		 from assets where checksum = ?`, checksum).Scan(
-		&a.ID, &mimeType, &assetType, &width, &height, &durationMs, &a.ThumbnailStatus)
+		&a.ID, &mimeType, &assetType, &width, &height, &durationMs, &a.ThumbnailStatus, &a.ClipStatus)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -48,9 +48,10 @@ func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Ass
 	return &a, nil
 }
 
-// Insert adds a new asset row. If an asset with the same checksum already
-// exists (a concurrent worker won the race) the insert is a no-op.
-func (r *Asset) Insert(ctx context.Context, a *entity.Asset) error {
+// Insert adds a new asset row with all processing steps pending. If an
+// asset with the same checksum already exists (a concurrent worker won the
+// race) the insert is a no-op. It reports whether a row was inserted.
+func (r *Asset) Insert(ctx context.Context, a *entity.Asset) (bool, error) {
 	var mimeType, dateTimeLocal, dateTime, timeZone, city, country any
 	if a.MimeType != "" {
 		mimeType = a.MimeType
@@ -74,52 +75,91 @@ func (r *Asset) Insert(ctx context.Context, a *entity.Asset) error {
 	if a.Latitude != 0 || a.Longitude != 0 {
 		latitude, longitude = a.Latitude, a.Longitude
 	}
-	if _, err := r.db.ExecContext(ctx,
+	res, err := r.db.ExecContext(ctx,
 		`insert into assets (checksum, mime_type, type, file_created_at, file_modified_at,
 		    date_time_local, date_time, time_zone, latitude, longitude, city, country,
-		    width, height, duration_ms, orientation, thumbnail_status)
-		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    width, height, duration_ms, orientation)
+		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 on conflict (checksum) do nothing`,
 		a.Checksum, mimeType, a.Type, a.FileCreatedAt, a.FileModifiedAt,
 		dateTimeLocal, dateTime, timeZone, latitude, longitude, city, country,
-		a.Width, a.Height, a.DurationMs, a.Orientation, a.ThumbnailStatus); err != nil {
-		return fmt.Errorf("insert asset: %w", err)
+		a.Width, a.Height, a.DurationMs, a.Orientation)
+	if err != nil {
+		return false, fmt.Errorf("insert asset: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("insert asset: rows affected: %w", err)
+	}
+	return n > 0, nil
 }
 
-// GetAssetsWithoutClipEmbedding returns assets whose thumbnail exists but
-// that have no row in asset_clip_embeddings yet, i.e. pending clip tasks.
-// They are re-enqueued at startup.
-func (r *Asset) GetAssetsWithoutClipEmbedding(ctx context.Context) ([]entity.Asset, error) {
+// GetAssetsWithPendingTasks returns the assets that still have a pending
+// processing step and an online file to process it from, e.g. because the
+// process restarted mid-task. They are re-enqueued at startup.
+func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context) ([]entity.Asset, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`select a.id, a.checksum from assets a
-		 where a.thumbnail_status = 0 and a.deleted_at is null
-		   and not exists (select 1 from asset_clip_embeddings e where e.asset_id = a.id)`)
+		`select a.id, a.checksum, a.thumbnail_status, a.clip_status from assets a
+		 where (a.thumbnail_status = 0 or a.clip_status = 0)
+		   and a.deleted_at is null and `+hasOnlineFileCond)
 	if err != nil {
-		return nil, fmt.Errorf("assets without clip embedding: %w", err)
+		return nil, fmt.Errorf("assets with pending tasks: %w", err)
 	}
 	defer rows.Close()
 
 	assets := []entity.Asset{}
 	for rows.Next() {
 		var a entity.Asset
-		if err := rows.Scan(&a.ID, &a.Checksum); err != nil {
-			return nil, fmt.Errorf("scan asset without clip embedding: %w", err)
+		if err := rows.Scan(&a.ID, &a.Checksum, &a.ThumbnailStatus, &a.ClipStatus); err != nil {
+			return nil, fmt.Errorf("scan asset with pending tasks: %w", err)
 		}
 		assets = append(assets, a)
 	}
 	return assets, rows.Err()
 }
 
-// InsertClipEmbedding stores the clip embedding for an asset. If the asset
-// already has an embedding (a concurrent worker won the race) the insert is
-// a no-op.
-func (r *Asset) InsertClipEmbedding(ctx context.Context, assetID int64, embedding []byte) error {
+// SetThumbnailStatus records the outcome of an asset's thumbnail step.
+func (r *Asset) SetThumbnailStatus(ctx context.Context, assetID int64, status entity.TaskStatus) error {
 	if _, err := r.db.ExecContext(ctx,
+		`update assets set thumbnail_status = ?, updated_at = unixepoch() where id = ?`,
+		status, assetID); err != nil {
+		return fmt.Errorf("set thumbnail status for asset %d: %w", assetID, err)
+	}
+	return nil
+}
+
+// SetClipStatus records the outcome of an asset's clip step.
+func (r *Asset) SetClipStatus(ctx context.Context, assetID int64, status entity.TaskStatus) error {
+	if _, err := r.db.ExecContext(ctx,
+		`update assets set clip_status = ?, updated_at = unixepoch() where id = ?`,
+		status, assetID); err != nil {
+		return fmt.Errorf("set clip status for asset %d: %w", assetID, err)
+	}
+	return nil
+}
+
+// InsertClipEmbedding stores the clip embedding for an asset and marks its
+// clip step ok. If the asset already has an embedding (a concurrent worker
+// won the race) the insert is a no-op.
+func (r *Asset) InsertClipEmbedding(ctx context.Context, assetID int64, embedding []byte) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("insert clip embedding for asset %d: begin: %w", assetID, err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
 		`insert into asset_clip_embeddings (asset_id, embedding) values (?, ?)
 		 on conflict (asset_id) do nothing`, assetID, embedding); err != nil {
 		return fmt.Errorf("insert clip embedding for asset %d: %w", assetID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`update assets set clip_status = ?, updated_at = unixepoch() where id = ?`,
+		entity.TaskStatusOK, assetID); err != nil {
+		return fmt.Errorf("set clip status for asset %d: %w", assetID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("insert clip embedding for asset %d: commit: %w", assetID, err)
 	}
 	return nil
 }
