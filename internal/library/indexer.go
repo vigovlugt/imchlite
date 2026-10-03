@@ -1,11 +1,14 @@
 package library
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -110,6 +113,30 @@ func fileStat(f entity.File) statInfo {
 	return statInfo{inode: f.Inode, size: f.Size, mtimeS: f.MtimeS, mtimeNs: f.MtimeNs}
 }
 
+// slowWalkOp is the duration above which a single walk operation (reading
+// a directory, a stat, a batch upsert) is logged individually.
+const slowWalkOp = 200 * time.Millisecond
+
+// walkTimings accumulates where the walk spends its wall time between
+// progress log lines, to find the cause of stalls.
+type walkTimings struct {
+	since   time.Time
+	readDir time.Duration
+	stat    time.Duration
+	upsert  time.Duration
+	dirs    int
+	upserts int
+}
+
+func (t *walkTimings) report(files int64) {
+	wall := time.Since(t.since)
+	other := wall - t.readDir - t.stat - t.upsert
+	log.Printf("indexer: %d files indexed (last batch %s: readdir %s over %d dirs, stat %s, upsert %s over %d batches, other %s)",
+		files, wall.Round(time.Millisecond), t.readDir.Round(time.Millisecond), t.dirs,
+		t.stat.Round(time.Millisecond), t.upsert.Round(time.Millisecond), t.upserts, other.Round(time.Millisecond))
+	*t = walkTimings{since: time.Now()}
+}
+
 // upsertBatchSize is how many new or changed files the walk upserts per
 // transaction.
 const upsertBatchSize = 1000
@@ -146,6 +173,8 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 
 	seenPaths := map[string]struct{}{}
 
+	timings := walkTimings{since: time.Now()}
+
 	// New and changed files are upserted in batches: one transaction per
 	// file would make the walk wait on a commit for every file. Their
 	// tasks are pushed only once the batch is committed, so no worker sees
@@ -155,7 +184,14 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 		if len(pending) == 0 {
 			return nil
 		}
+		start := time.Now()
 		ids, err := fileRepo.UpsertMany(ctx, pending)
+		took := time.Since(start)
+		timings.upsert += took
+		timings.upserts++
+		if took > slowWalkOp {
+			log.Printf("indexer: slow upsert of %d files: %s", len(pending), took.Round(time.Millisecond))
+		}
 		if err != nil {
 			return err
 		}
@@ -174,42 +210,50 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 		return nil
 	}
 
-	err = filepath.WalkDir(libraryLocation, func(path string, d fs.DirEntry, err error) error {
+	// statEntry returns the file's identity, from the directory listing
+	// when it carries one (Windows) and otherwise from a stat.
+	statEntry := func(path string, entry media.DirEntry) (statInfo, error) {
+		if entry.HasStat {
+			return statInfo{
+				inode:   int64(entry.Inode),
+				size:    entry.Size,
+				mtimeS:  entry.ModTime.Unix(),
+				mtimeNs: int64(entry.ModTime.Nanosecond()),
+			}, nil
+		}
+
+		info, err := os.Lstat(path)
 		if err != nil {
-			return fmt.Errorf("walk %s: %w", path, err)
+			return statInfo{}, fmt.Errorf("stat: %w", err)
 		}
-
-		if err := ctx.Err(); err != nil {
-			return err
+		inode, err := media.FileInode(fs.FileInfoToDirEntry(info), path)
+		if err != nil {
+			return statInfo{}, fmt.Errorf("inode lookup: %w", err)
 		}
+		mtime := info.ModTime()
+		return statInfo{inode: inode, size: info.Size(), mtimeS: mtime.Unix(), mtimeNs: int64(mtime.Nanosecond())}, nil
+	}
 
-		if d.Name()[0] == '.' {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		if d.IsDir() {
-			if d.Name() == "@eaDir" || d.Name() == "#recycle" || d.Name() == "#snapshot" || d.Name() == "System Volume Information" || d.Name() == "$RECYCLE.BIN" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
+	visitFile := func(path string, entry media.DirEntry) error {
 		if !media.IsMediaPath(path) {
 			return nil
 		}
 
 		if n := state.discovered.Add(1); n%1000 == 0 {
-			log.Printf("indexer: %d files indexed", n)
+			timings.report(n)
 		}
 
-		info, err := d.Info()
+		statStart := time.Now()
+		stat, err := statEntry(path, entry)
+		if took := time.Since(statStart); took > slowWalkOp {
+			log.Printf("indexer: slow stat of %s: %s", path, took.Round(time.Millisecond))
+		}
+		timings.stat += time.Since(statStart)
 		if err != nil {
-			log.Printf("indexer: stat failed for %s: %v", path, err)
+			log.Printf("indexer: %s: %v", path, err)
 			return nil
 		}
+		inode := stat.inode
 
 		relativePath, err := filepath.Rel(libraryLocation, path)
 		if err != nil {
@@ -219,16 +263,6 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 		// ResolveLibraryPath converts back to OS-native form at I/O boundaries.
 		relativePath = filepath.ToSlash(relativePath)
 		seenPaths[relativePath] = struct{}{}
-
-		mtime := info.ModTime()
-		stat := statInfo{size: info.Size(), mtimeS: mtime.Unix(), mtimeNs: int64(mtime.Nanosecond())}
-
-		inode, err := media.FileInode(d, path)
-		if err != nil {
-			log.Printf("indexer: inode lookup failed for %s: %v", path, err)
-			return nil
-		}
-		stat.inode = inode
 
 		if existing, ok := fileByPath[relativePath]; ok && fileStat(existing) == stat && !existing.IsOffline {
 			if existing.AssetID == nil {
@@ -261,7 +295,66 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 			return flush()
 		}
 		return nil
-	})
+	}
+
+	var walkDir func(dir string) error
+	walkDir = func(dir string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		readStart := time.Now()
+		entries, err := media.ReadDir(dir)
+		took := time.Since(readStart)
+		timings.readDir += took
+		timings.dirs++
+		if took > slowWalkOp {
+			log.Printf("indexer: slow readdir of %s: %s", dir, took.Round(time.Millisecond))
+		}
+		if err != nil {
+			return fmt.Errorf("walk %s: %w", dir, err)
+		}
+
+		// Stat files in inode order rather than name order: on NTFS the
+		// inode is the MFT record number, so this reads file records
+		// front to back instead of seeking between them on spinning disks.
+		// On Windows the listing already carries each file's stat data, so
+		// the order does not matter there.
+		slices.SortFunc(entries, func(a, b media.DirEntry) int {
+			return cmp.Compare(a.Inode, b.Inode)
+		})
+
+		var subdirs []string
+		for _, e := range entries {
+			if e.Name[0] == '.' {
+				continue
+			}
+			path := filepath.Join(dir, e.Name)
+			if e.IsDir() {
+				if e.Name == "@eaDir" || e.Name == "#recycle" || e.Name == "#snapshot" || e.Name == "System Volume Information" || e.Name == "$RECYCLE.BIN" {
+					continue
+				}
+				subdirs = append(subdirs, path)
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := visitFile(path, e); err != nil {
+				return err
+			}
+		}
+
+		slices.Sort(subdirs)
+		for _, subdir := range subdirs {
+			if err := walkDir(subdir); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	err = walkDir(libraryLocation)
 	if err != nil {
 		return fmt.Errorf("walk library: %w", err)
 	}
