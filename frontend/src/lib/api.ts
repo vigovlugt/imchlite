@@ -12,7 +12,9 @@ export interface Asset {
   longitude?: number
   city?: string
   country?: string
+  /** displayed width, i.e. with the orientation applied */
   width?: number
+  /** displayed height, i.e. with the orientation applied */
   height?: number
   durationMs?: number
   orientation?: number

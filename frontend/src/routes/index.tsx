@@ -25,6 +25,7 @@ import {
   type AssetFilters,
   type IndexStatus,
 } from "#/lib/api";
+import { JustifiedGrid } from "@/components/justified-grid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -262,10 +263,7 @@ function Home() {
               ? `Similar to “${search.context_query}”`
               : "Timeline"}
           </h1>
-          {assetsQuery.isPending ? (
-            <Spinner className="text-muted-foreground" />
-          ) : null}
-          {assetsQuery.isFetching && (
+          {assetsQuery.isFetching && !assetsQuery.isFetchingNextPage && (
             <Spinner className="text-muted-foreground" />
           )}
           {assetsQuery.isError && (
@@ -296,15 +294,21 @@ function Home() {
             </Empty>
           ) : similarityMode ? (
             <div className="px-6 pb-10">
-              <div className="grid gap-0.5 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
-                {assets.map((asset, index) => (
+              <JustifiedGrid
+                items={assets}
+                getKey={assetKey}
+                getAspect={assetAspect}
+                renderItem={(asset) => (
                   <AssetCell
-                    key={asset.id}
                     asset={asset}
-                    onClick={() => setLightboxIndex(index)}
+                    onClick={() =>
+                      setLightboxIndex(
+                        assets.findIndex((a) => a.id === asset.id),
+                      )
+                    }
                   />
-                ))}
-              </div>
+                )}
+              />
               <div ref={sentinelRef} className="h-4" />
             </div>
           ) : (
@@ -317,10 +321,13 @@ function Home() {
                       {day.assets.length}
                     </span>
                   </div>
-                  <div className="grid gap-0.5 px-6 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
-                    {day.assets.map((asset) => (
+                  <JustifiedGrid
+                    className="px-6"
+                    items={day.assets}
+                    getKey={assetKey}
+                    getAspect={assetAspect}
+                    renderItem={(asset) => (
                       <AssetCell
-                        key={asset.id}
                         asset={asset}
                         onClick={() =>
                           setLightboxIndex(
@@ -328,8 +335,8 @@ function Home() {
                           )
                         }
                       />
-                    ))}
-                  </div>
+                    )}
+                  />
                 </section>
               ))}
               <div ref={sentinelRef} className="h-4" />
@@ -363,12 +370,19 @@ function Home() {
   );
 }
 
+const assetKey = (asset: Asset) => asset.id;
+
+// Width and height come from the api already oriented; assets without
+// dimensions fall back to a square cell.
+const assetAspect = (asset: Asset) =>
+  asset.width && asset.height ? asset.width / asset.height : 1;
+
 function AssetCell({ asset, onClick }: { asset: Asset; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="group relative aspect-square overflow-hidden focus:outline-none"
+      className="group relative h-full w-full overflow-hidden focus:outline-none"
     >
       <img
         src={thumbUrl(asset.checksum)}

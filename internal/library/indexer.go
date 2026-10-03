@@ -110,6 +110,10 @@ func fileStat(f entity.File) statInfo {
 	return statInfo{inode: f.Inode, size: f.Size, mtimeS: f.MtimeS, mtimeNs: f.MtimeNs}
 }
 
+// upsertBatchSize is how many new or changed files the walk upserts per
+// transaction.
+const upsertBatchSize = 1000
+
 // IndexLibrary walks the library and records the run's outcome in the given
 // indexer state. The walk holds the disk lock throughout, so processing of
 // the files it enqueues waits for it instead of making the disk seek
@@ -141,6 +145,34 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 	log.Printf("snapshot: %d known files, walking library", len(existingFiles))
 
 	seenPaths := map[string]struct{}{}
+
+	// New and changed files are upserted in batches: one transaction per
+	// file would make the walk wait on a commit for every file. Their
+	// tasks are pushed only once the batch is committed, so no worker sees
+	// a row id that is not yet visible.
+	pending := make([]repository.NewFile, 0, upsertBatchSize)
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		ids, err := fileRepo.UpsertMany(ctx, pending)
+		if err != nil {
+			return err
+		}
+		for i, f := range pending {
+			if f.AssetID == nil {
+				// The row has no asset yet; enqueue a file task.
+				queue.Push(fileTask{FileID: ids[i], Path: f.Path}, filePriority)
+			} else {
+				// The moved file's content is unchanged and already has an
+				// asset, so no processing is needed.
+				state.skipped.Add(1)
+				state.processed.Add(1)
+			}
+		}
+		pending = pending[:0]
+		return nil
+	}
 
 	err = filepath.WalkDir(libraryLocation, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -216,7 +248,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 			assetID = known.AssetID
 		}
 
-		knownFile := repository.NewFile{
+		pending = append(pending, repository.NewFile{
 			AssetID:   assetID,
 			Path:      relativePath,
 			Inode:     inode,
@@ -224,24 +256,16 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 			MtimeS:    stat.mtimeS,
 			MtimeNs:   stat.mtimeNs,
 			IsOffline: false,
+		})
+		if len(pending) >= upsertBatchSize {
+			return flush()
 		}
-		fileID, err := fileRepo.Upsert(ctx, knownFile)
-		if err != nil {
-			return fmt.Errorf("upsert %s: %w", relativePath, err)
-		}
-		if assetID == nil {
-			// The row has no asset yet; enqueue a file task.
-			queue.Push(fileTask{FileID: fileID, Path: relativePath}, filePriority)
-		} else {
-			// The moved file's content is unchanged and already has an
-			// asset, so no processing is needed.
-			state.skipped.Add(1)
-			state.processed.Add(1)
-		}
-
 		return nil
 	})
 	if err != nil {
+		return fmt.Errorf("walk library: %w", err)
+	}
+	if err := flush(); err != nil {
 		return fmt.Errorf("walk library: %w", err)
 	}
 

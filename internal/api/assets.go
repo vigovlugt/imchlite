@@ -86,12 +86,16 @@ func newAssetResponse(a entity.Asset) assetResponse {
 	if a.Country != "" {
 		r.Country = a.Country
 	}
-	if a.Width != 0 {
-		width := a.Width
+	// Stored dimensions are as encoded; the api reports them as displayed,
+	// so orientations that rotate by 90° swap width and height.
+	width, height := a.Width, a.Height
+	if a.Orientation >= 5 && a.Orientation <= 8 {
+		width, height = height, width
+	}
+	if width != 0 {
 		r.Width = &width
 	}
-	if a.Height != 0 {
-		height := a.Height
+	if height != 0 {
 		r.Height = &height
 	}
 	if a.DurationMs != 0 {

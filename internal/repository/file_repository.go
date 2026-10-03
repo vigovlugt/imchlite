@@ -103,10 +103,19 @@ func (r *File) Insert(ctx context.Context, f NewFile) (int64, error) {
 	return id, nil
 }
 
-// Upsert inserts a file row, or replaces its filesystem identity and asset
-// link if a row already exists for the path. Returns the row id.
-func (r *File) Upsert(ctx context.Context, f NewFile) (int64, error) {
-	res, err := r.db.ExecContext(ctx,
+// UpsertMany inserts file rows, or replaces their filesystem identity and
+// asset link where a row already exists for the path, in a single
+// transaction. Returns the row ids in input order.
+func (r *File) UpsertMany(ctx context.Context, files []NewFile) ([]int64, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("upsert files: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	// RETURNING rather than LastInsertId: the latter is not updated when the
+	// conflict path turns the insert into an update.
+	stmt, err := tx.PrepareContext(ctx,
 		`insert into files (asset_id, path, inode, size, mtime_s, mtime_ns, is_offline)
 		 values (?, ?, ?, ?, ?, ?, ?)
 		 on conflict (path) do update set
@@ -116,12 +125,26 @@ func (r *File) Upsert(ctx context.Context, f NewFile) (int64, error) {
 		    mtime_s = excluded.mtime_s,
 		    mtime_ns = excluded.mtime_ns,
 		    is_offline = excluded.is_offline,
-		    updated_at = unixepoch()`,
-		f.AssetID, f.Path, f.Inode, f.Size, f.MtimeS, f.MtimeNs, f.IsOffline)
+		    updated_at = unixepoch()
+		 returning id`)
 	if err != nil {
-		return 0, fmt.Errorf("upsert file %s: %w", f.Path, err)
+		return nil, fmt.Errorf("upsert files: prepare: %w", err)
 	}
-	return res.LastInsertId()
+	defer stmt.Close()
+
+	ids := make([]int64, len(files))
+	for i, f := range files {
+		if err := stmt.QueryRowContext(ctx,
+			f.AssetID, f.Path, f.Inode, f.Size, f.MtimeS, f.MtimeNs, f.IsOffline,
+		).Scan(&ids[i]); err != nil {
+			return nil, fmt.Errorf("upsert file %s: %w", f.Path, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("upsert files: commit: %w", err)
+	}
+	return ids, nil
 }
 
 // LinkAsset attaches an asset to a file row.

@@ -185,6 +185,20 @@ func (e *Exiftool) ProbeMetadata(path string) (MediaMetadata, error) {
 	}
 
 	m.Orientation, _ = fieldInt(fields, "Orientation")
+	if m.Orientation == 0 {
+		// Videos carry a QuickTime rotation instead of an EXIF orientation;
+		// map it onto the equivalent orientation value.
+		if rotation, err := fieldInt(fields, "Rotation"); err == nil {
+			switch (rotation%360 + 360) % 360 {
+			case 90:
+				m.Orientation = 6
+			case 180:
+				m.Orientation = 3
+			case 270:
+				m.Orientation = 8
+			}
+		}
+	}
 	m.MimeType, _ = fieldString(fields, "MIMEType")
 
 	m.Latitude, _ = fieldFloat(fields, "GPSLatitude")
