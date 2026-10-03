@@ -386,9 +386,7 @@ func walkLibrary(ctx context.Context, libraryDir, dataDir string, excludes Exclu
 	offlineFiles := []int64{}
 
 	for path, file := range fileByPath {
-		// Excluded files were not walked but are not gone: leave them as
-		// they are.
-		if file.IsOffline || excludes.Match(path) {
+		if file.IsOffline {
 			continue
 		}
 		if _, ok := seenPaths[path]; !ok {
