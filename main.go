@@ -30,6 +30,7 @@ func main() {
 	workers := flag.Int("workers", runtime.NumCPU(), "number of parallel asset processors")
 	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
 	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip) that failed in a previous run")
+	serveOnly := flag.Bool("serve-only", false, "only run the api server; do not index the library or process assets")
 	flag.Parse()
 
 	if *libraryLocationFlag == "" {
@@ -48,33 +49,9 @@ func main() {
 	defer stop()
 
 	start := time.Now()
-	ffmpegDir, err := ffmpeg.Setup()
-	if err != nil {
-		log.Fatalf("extract ffmpeg: %v", err)
-	}
-	log.Printf("debug: extracted ffmpeg in %s", time.Since(start))
-
-	start = time.Now()
-	exiftoolDir, err := exiftoolbin.Setup()
-	if err != nil {
-		log.Fatalf("extract exiftool: %v", err)
-	}
-	log.Printf("debug: extracted exiftool in %s", time.Since(start))
-
-	start = time.Now()
 	if err := onnxruntime.Setup(); err != nil {
 		log.Fatalf("setup onnxruntime: %v", err)
 	}
-	clipDir, err := ai.Setup(ctx)
-	if err != nil {
-		log.Fatalf("download clip visual model: %v", err)
-	}
-	clip, err := ai.NewClipVisual(clipDir)
-	if err != nil {
-		log.Fatalf("create clip visual model: %v", err)
-	}
-	defer clip.Close()
-
 	textualDir, err := ai.SetupTextual(ctx)
 	if err != nil {
 		log.Fatalf("download clip textual model: %v", err)
@@ -84,7 +61,7 @@ func main() {
 		log.Fatalf("create clip textual model: %v", err)
 	}
 	defer textual.Close()
-	log.Printf("debug: downloaded clip models in %s", time.Since(start))
+	log.Printf("debug: downloaded clip textual model in %s", time.Since(start))
 
 	start = time.Now()
 	vec1Dir, err := vec1.Setup()
@@ -92,11 +69,6 @@ func main() {
 		log.Fatalf("extract vec1 extension: %v", err)
 	}
 	log.Printf("debug: extracted vec1 extension in %s", time.Since(start))
-
-	f, err := ffmpeg.New(ffmpegDir)
-	if err != nil {
-		log.Fatalf("start ffmpeg: %v", err)
-	}
 
 	db, err := database.Open(libraryLocation, vec1.LibraryPath(vec1Dir))
 	if err != nil {
@@ -109,34 +81,70 @@ func main() {
 		log.Fatalf("init migrations: %v", err)
 	}
 
-	fileRepo := repository.NewFileRepository(db)
 	assetRepo := repository.NewAsset(db)
-	queue := library.NewQueue()
-	disk := disk.New()
-	processor := library.NewProcessor(ctx, libraryLocation, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 	state := library.NewIndexerState()
-
-	library.EnqueueIndexTask(queue)
-
-	// Asset tasks live only in memory; the per-step status columns are the
-	// durable marker. Re-derive any tasks lost by a previous restart.
-	if n, err := library.EnqueuePendingAssetTasks(ctx, assetRepo, queue, *retryFailed); err != nil {
-		log.Fatalf("recover pending asset tasks: %v", err)
-	} else if n > 0 {
-		log.Printf("re-enqueued %d pending asset tasks", n)
-	}
-
+	queue := library.NewQueue()
 	var wg sync.WaitGroup
-	for range *workers {
-		et, err := exiftoolbin.New(exiftoolDir)
-		if err != nil {
-			log.Fatalf("start exiftool: %v", err)
-		}
-		defer et.Close()
 
-		wg.Go(func() {
-			processor.Worker(et, queue, state)
-		})
+	if *serveOnly {
+		state.Complete()
+	} else {
+		start = time.Now()
+		ffmpegDir, err := ffmpeg.Setup()
+		if err != nil {
+			log.Fatalf("extract ffmpeg: %v", err)
+		}
+		log.Printf("debug: extracted ffmpeg in %s", time.Since(start))
+
+		start = time.Now()
+		exiftoolDir, err := exiftoolbin.Setup()
+		if err != nil {
+			log.Fatalf("extract exiftool: %v", err)
+		}
+		log.Printf("debug: extracted exiftool in %s", time.Since(start))
+
+		start = time.Now()
+		clipDir, err := ai.Setup(ctx)
+		if err != nil {
+			log.Fatalf("download clip visual model: %v", err)
+		}
+		clip, err := ai.NewClipVisual(clipDir)
+		if err != nil {
+			log.Fatalf("create clip visual model: %v", err)
+		}
+		defer clip.Close()
+		log.Printf("debug: downloaded clip visual model in %s", time.Since(start))
+
+		f, err := ffmpeg.New(ffmpegDir)
+		if err != nil {
+			log.Fatalf("start ffmpeg: %v", err)
+		}
+
+		fileRepo := repository.NewFileRepository(db)
+		disk := disk.New()
+		processor := library.NewProcessor(ctx, libraryLocation, f, disk, fileRepo, assetRepo, clip, *retryFailed)
+
+		library.EnqueueIndexTask(queue)
+
+		// Asset tasks live only in memory; the per-step status columns are the
+		// durable marker. Re-derive any tasks lost by a previous restart.
+		if n, err := library.EnqueuePendingAssetTasks(ctx, assetRepo, queue, *retryFailed); err != nil {
+			log.Fatalf("recover pending asset tasks: %v", err)
+		} else if n > 0 {
+			log.Printf("re-enqueued %d pending asset tasks", n)
+		}
+
+		for range *workers {
+			et, err := exiftoolbin.New(exiftoolDir)
+			if err != nil {
+				log.Fatalf("start exiftool: %v", err)
+			}
+			defer et.Close()
+
+			wg.Go(func() {
+				processor.Worker(et, queue, state)
+			})
+		}
 	}
 
 	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, textual, frontendHandler())

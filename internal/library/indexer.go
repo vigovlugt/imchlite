@@ -36,7 +36,8 @@ func NewIndexerState() *IndexerState {
 	return &IndexerState{startedAt: time.Now()}
 }
 
-func (s *IndexerState) complete() {
+// Complete marks the index run as finished.
+func (s *IndexerState) Complete() {
 	s.completed.Store(true)
 }
 
@@ -121,7 +122,7 @@ func IndexLibrary(ctx context.Context, libraryLocation string, d *disk.Disk, fil
 		state.fail(err)
 		return err
 	}
-	state.complete()
+	state.Complete()
 	return nil
 }
 
@@ -168,7 +169,9 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 			return nil
 		}
 
-		state.discovered.Add(1)
+		if n := state.discovered.Add(1); n%1000 == 0 {
+			log.Printf("indexer: %d files indexed", n)
+		}
 
 		info, err := d.Info()
 		if err != nil {
