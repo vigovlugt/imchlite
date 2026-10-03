@@ -88,11 +88,14 @@ type processor struct {
 	files           *repository.File
 	assets          *repository.Asset
 	clip            *ai.ClipVisual
+	// retryFailed makes failed steps run again, like pending ones.
+	retryFailed bool
 }
 
 // NewProcessor creates a processor sharing the given repositories, the
-// extracted ffmpeg binary and the clip model.
-func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual) *processor {
+// extracted ffmpeg binary and the clip model. With retryFailed, steps that
+// failed in a previous run are run again.
+func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
 	return &processor{
 		ctx:             ctx,
 		libraryLocation: libraryLocation,
@@ -100,6 +103,7 @@ func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg
 		files:           files,
 		assets:          assets,
 		clip:            clip,
+		retryFailed:     retryFailed,
 	}
 }
 
@@ -234,14 +238,19 @@ func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 	return nil
 }
 
+// shouldRun reports whether a step with the given status needs to run.
+func (p *processor) shouldRun(status entity.TaskStatus) bool {
+	return status == entity.TaskStatusPending || (p.retryFailed && status == entity.TaskStatusFailed)
+}
+
 // processAsset runs the asset's pending steps in order, skipping the ones
-// whose status is already ok or failed. path and data are the file the
+// whose status is already ok, or failed unless failed steps are retried. path and data are the file the
 // asset was just created from and its bytes when already read; with an
 // empty path an online file of the asset is looked up. A step interrupted
 // by shutdown or a model that failed to load stays pending, to be retried
 // on the next startup.
 func (p *processor) processAsset(asset entity.Asset, path string, data []byte) error {
-	if asset.ThumbnailStatus == entity.TaskStatusPending {
+	if p.shouldRun(asset.ThumbnailStatus) {
 		if path == "" {
 			var err error
 			if path, _, err = p.assets.LiveFileForChecksum(p.ctx, asset.Checksum); err != nil {
@@ -266,9 +275,12 @@ func (p *processor) processAsset(asset entity.Asset, path string, data []byte) e
 		log.Printf("thumbnailed asset=%d path=%s total_ms=%d", asset.ID, path, time.Since(started).Milliseconds())
 	}
 
-	if asset.ClipStatus == entity.TaskStatusPending {
+	if p.shouldRun(asset.ClipStatus) {
 		if asset.ThumbnailStatus == entity.TaskStatusFailed {
 			// Without a thumbnail there is nothing to embed.
+			if asset.ClipStatus == entity.TaskStatusFailed {
+				return nil
+			}
 			return p.assets.SetClipStatus(p.ctx, asset.ID, entity.TaskStatusFailed)
 		}
 		if err := p.processClip(asset); err != nil {
@@ -310,10 +322,11 @@ func (p *processor) processClip(asset entity.Asset) error {
 }
 
 // EnqueuePendingAssetTasks re-adds asset tasks for assets with a pending
-// step, e.g. because the process restarted mid-task. It returns the number
-// of tasks enqueued.
-func EnqueuePendingAssetTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any]) (int, error) {
-	pending, err := assets.GetAssetsWithPendingTasks(ctx)
+// step, e.g. because the process restarted mid-task, and with retryFailed
+// also for assets with a failed step. It returns the number of tasks
+// enqueued.
+func EnqueuePendingAssetTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any], retryFailed bool) (int, error) {
+	pending, err := assets.GetAssetsWithPendingTasks(ctx, retryFailed)
 	if err != nil {
 		return 0, err
 	}

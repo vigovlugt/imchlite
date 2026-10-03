@@ -96,11 +96,16 @@ func (r *Asset) Insert(ctx context.Context, a *entity.Asset) (bool, error) {
 
 // GetAssetsWithPendingTasks returns the assets that still have a pending
 // processing step and an online file to process it from, e.g. because the
-// process restarted mid-task. They are re-enqueued at startup.
-func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context) ([]entity.Asset, error) {
+// process restarted mid-task. With includeFailed, assets with a failed step
+// are returned too. They are re-enqueued at startup.
+func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context, includeFailed bool) ([]entity.Asset, error) {
+	statuses := "0"
+	if includeFailed {
+		statuses = "0, 2"
+	}
 	rows, err := r.db.QueryContext(ctx,
 		`select a.id, a.checksum, a.thumbnail_status, a.clip_status from assets a
-		 where (a.thumbnail_status = 0 or a.clip_status = 0)
+		 where (a.thumbnail_status in (`+statuses+`) or a.clip_status in (`+statuses+`))
 		   and a.deleted_at is null and `+hasOnlineFileCond)
 	if err != nil {
 		return nil, fmt.Errorf("assets with pending tasks: %w", err)

@@ -26,6 +26,8 @@ func main() {
 	libraryLocationFlag := flag.String("library-location", "", "path to the imchlite library")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
 	workers := flag.Int("workers", 1, "number of parallel asset processors")
+	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
+	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip) that failed in a previous run")
 	flag.Parse()
 
 	if *libraryLocationFlag == "" {
@@ -108,14 +110,14 @@ func main() {
 	fileRepo := repository.NewFileRepository(db)
 	assetRepo := repository.NewAsset(db)
 	queue := library.NewQueue()
-	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip)
+	processor := library.NewProcessor(ctx, libraryLocation, f, fileRepo, assetRepo, clip, *retryFailed)
 	state := library.NewIndexerState()
 
 	library.EnqueueIndexTask(queue)
 
 	// Asset tasks live only in memory; the per-step status columns are the
 	// durable marker. Re-derive any tasks lost by a previous restart.
-	if n, err := library.EnqueuePendingAssetTasks(ctx, assetRepo, queue); err != nil {
+	if n, err := library.EnqueuePendingAssetTasks(ctx, assetRepo, queue, *retryFailed); err != nil {
 		log.Fatalf("recover pending asset tasks: %v", err)
 	} else if n > 0 {
 		log.Printf("re-enqueued %d pending asset tasks", n)
@@ -135,7 +137,7 @@ func main() {
 	}
 
 	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, textual, frontendHandler())
-	if err := api.RunServer(ctx, srv); err != nil {
+	if err := api.RunServer(ctx, srv, !*noBrowser); err != nil {
 		log.Printf("serve: %v", err)
 		return
 	}

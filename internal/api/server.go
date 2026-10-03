@@ -65,7 +65,9 @@ func openBrowser(url string) {
 }
 
 // RunServer serves until the context is canceled, then shuts down gracefully.
-func RunServer(ctx context.Context, srv *http.Server) error {
+// When openInBrowser is set, the frontend is opened in the default browser
+// once the listener is up.
+func RunServer(ctx context.Context, srv *http.Server, openInBrowser bool) error {
 	log.Printf("server listening on %s", srv.Addr)
 
 	listener, err := net.Listen("tcp", srv.Addr)
@@ -73,7 +75,9 @@ func RunServer(ctx context.Context, srv *http.Server) error {
 		return err
 	}
 
-	go openBrowser("http://" + srv.Addr)
+	if openInBrowser {
+		go openBrowser("http://" + srv.Addr)
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
