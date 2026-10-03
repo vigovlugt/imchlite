@@ -26,7 +26,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 // NewServer builds the http server exposing the api and the embedded
 // frontend.
-func NewServer(addr string, state *library.IndexerState, assets *repository.Asset, libraryLocation string, textual *ai.ClipTextual, frontend http.Handler) *http.Server {
+func NewServer(addr string, state *library.IndexerState, assets *repository.Asset, libraryDir, dataDir string, textual *ai.ClipTextual, frontend http.Handler) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +37,7 @@ func NewServer(addr string, state *library.IndexerState, assets *repository.Asse
 		writeJSON(w, http.StatusOK, state.Status())
 	})
 
-	registerAssetRoutes(mux, assets, libraryLocation, textual)
+	registerAssetRoutes(mux, assets, libraryDir, dataDir, textual)
 
 	mux.Handle("GET /", frontend)
 

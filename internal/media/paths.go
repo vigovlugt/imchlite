@@ -13,8 +13,8 @@ import (
 // single conversion point back to OS-native separators. Keeping this
 // conversion at I/O boundaries makes a library movable without invalidating
 // paths persisted in its database.
-func ResolveLibraryPath(libraryLocation, relativePath string) string {
-	return filepath.FromSlash(filepath.Join(libraryLocation, relativePath))
+func ResolveLibraryPath(libraryDir, relativePath string) string {
+	return filepath.FromSlash(filepath.Join(libraryDir, relativePath))
 }
 
 // ToSlashPaths normalizes user-supplied path filter values to forward slashes

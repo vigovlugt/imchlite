@@ -88,13 +88,14 @@ var pipeableImageExtensions = map[string]struct{}{
 
 // processor holds the shared dependencies of the asset and clip workers.
 type processor struct {
-	ctx             context.Context
-	libraryLocation string
-	ffmpeg          *ffmpeg.FFmpeg
-	disk            *disk.Disk
-	files           *repository.File
-	assets          *repository.Asset
-	clip            *ai.ClipVisual
+	ctx        context.Context
+	libraryDir string
+	dataDir    string
+	ffmpeg     *ffmpeg.FFmpeg
+	disk       *disk.Disk
+	files      *repository.File
+	assets     *repository.Asset
+	clip       *ai.ClipVisual
 	// retryFailed makes failed steps run again, like pending ones.
 	retryFailed bool
 }
@@ -102,16 +103,17 @@ type processor struct {
 // NewProcessor creates a processor sharing the given repositories, the
 // extracted ffmpeg binary, the library's disk lock and the clip model. With
 // retryFailed, steps that failed in a previous run are run again.
-func NewProcessor(ctx context.Context, libraryLocation string, ff *ffmpeg.FFmpeg, d *disk.Disk, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
+func NewProcessor(ctx context.Context, libraryDir, dataDir string, ff *ffmpeg.FFmpeg, d *disk.Disk, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
 	return &processor{
-		ctx:             ctx,
-		libraryLocation: libraryLocation,
-		ffmpeg:          ff,
-		disk:            d,
-		files:           files,
-		assets:          assets,
-		clip:            clip,
-		retryFailed:     retryFailed,
+		ctx:         ctx,
+		libraryDir:  libraryDir,
+		dataDir:     dataDir,
+		ffmpeg:      ff,
+		disk:        d,
+		files:       files,
+		assets:      assets,
+		clip:        clip,
+		retryFailed: retryFailed,
 	}
 }
 
@@ -132,8 +134,8 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 		}
 		switch task := t.(type) {
 		case indexTask:
-			log.Printf("indexing library %s", p.libraryLocation)
-			if err := IndexLibrary(p.ctx, p.libraryLocation, p.disk, p.files, q, state); err != nil {
+			log.Printf("indexing library %s", p.libraryDir)
+			if err := IndexLibrary(p.ctx, p.libraryDir, p.dataDir, p.disk, p.files, q, state); err != nil {
 				log.Printf("indexing failed: %v", err)
 				continue
 			}
@@ -180,7 +182,7 @@ type processTimings struct {
 func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 	started := time.Now()
 
-	absolutePath := media.ResolveLibraryPath(p.libraryLocation, task.Path)
+	absolutePath := media.ResolveLibraryPath(p.libraryDir, task.Path)
 
 	var (
 		info     os.FileInfo
@@ -297,7 +299,7 @@ func (p *processor) processAsset(asset entity.Asset, path string, data []byte, w
 		}
 
 		started := time.Now()
-		absolutePath := media.ResolveLibraryPath(p.libraryLocation, path)
+		absolutePath := media.ResolveLibraryPath(p.libraryDir, path)
 		waited, err := p.readDisk(warm, func() error {
 			return p.createThumbnail(asset.Checksum, absolutePath, data)
 		})
@@ -346,7 +348,7 @@ func (p *processor) processClip(asset entity.Asset, thumbnailWarm bool) error {
 	var thumbnail []byte
 	waited, err := p.readDisk(thumbnailWarm, func() error {
 		var err error
-		thumbnail, err = os.ReadFile(thumbnailPath(p.libraryLocation, asset.Checksum))
+		thumbnail, err = os.ReadFile(thumbnailPath(p.dataDir, asset.Checksum))
 		return err
 	})
 	if err != nil {
@@ -441,7 +443,7 @@ func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolut
 
 	// Sidecars are separate files, not warmed by reading the media file.
 	waited, err = p.disk.Do(p.ctx, func() error {
-		applySidecars(p.libraryLocation, task.Path, asset)
+		applySidecars(p.libraryDir, task.Path, asset)
 		return nil
 	})
 	timings.diskWaitMs += waited.Milliseconds()
@@ -472,7 +474,7 @@ func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolut
 }
 
 func (p *processor) createThumbnail(checksum []byte, absolutePath string, data []byte) error {
-	dest := thumbnailPath(p.libraryLocation, checksum)
+	dest := thumbnailPath(p.dataDir, checksum)
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("create thumbnail dir: %w", err)
@@ -487,8 +489,8 @@ func (p *processor) createThumbnail(checksum []byte, absolutePath string, data [
 
 // thumbnailPath returns the canonical thumbnail location for the asset with
 // the given checksum.
-func thumbnailPath(libraryLocation string, checksum []byte) string {
-	dir := filepath.Join(libraryLocation, ".imchlite", "thumbnails")
+func thumbnailPath(dataDir string, checksum []byte) string {
+	dir := filepath.Join(dataDir, "thumbnails")
 	hex := fmt.Sprintf("%x", checksum)
 	return filepath.Join(dir, hex[0:2], hex[2:4], hex+".webp")
 }

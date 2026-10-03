@@ -25,7 +25,8 @@ import (
 )
 
 func main() {
-	libraryLocationFlag := flag.String("library-location", "", "path to the imchlite library")
+	libraryDirFlag := flag.String("library-dir", "", "path to the imchlite library")
+	dataDirFlag := flag.String("data-dir", "", "path to the imchlite data directory (database, thumbnails); defaults to <library-dir>/.imchlite")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
 	workers := flag.Int("workers", runtime.NumCPU(), "number of parallel asset processors")
 	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
@@ -33,14 +34,21 @@ func main() {
 	serveOnly := flag.Bool("serve-only", false, "only run the api server; do not index the library or process assets")
 	flag.Parse()
 
-	if *libraryLocationFlag == "" {
+	if *libraryDirFlag == "" {
 		if cwd, err := os.Getwd(); err == nil && filepath.Base(cwd) == ".imchlite" {
-			*libraryLocationFlag = ".."
+			*libraryDirFlag = ".."
 		} else {
-			*libraryLocationFlag = "."
+			*libraryDirFlag = "."
 		}
 	}
-	libraryLocation, err := filepath.Abs(*libraryLocationFlag)
+	libraryDir, err := filepath.Abs(*libraryDirFlag)
+	if err != nil {
+		log.Fatalf("get absolute path: %v", err)
+	}
+	if *dataDirFlag == "" {
+		*dataDirFlag = filepath.Join(libraryDir, ".imchlite")
+	}
+	dataDir, err := filepath.Abs(*dataDirFlag)
 	if err != nil {
 		log.Fatalf("get absolute path: %v", err)
 	}
@@ -70,7 +78,7 @@ func main() {
 	}
 	log.Printf("debug: extracted vec1 extension in %s", time.Since(start))
 
-	db, err := database.Open(libraryLocation, vec1.LibraryPath(vec1Dir))
+	db, err := database.Open(dataDir, vec1.LibraryPath(vec1Dir))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
@@ -122,7 +130,7 @@ func main() {
 
 		fileRepo := repository.NewFileRepository(db)
 		disk := disk.New()
-		processor := library.NewProcessor(ctx, libraryLocation, f, disk, fileRepo, assetRepo, clip, *retryFailed)
+		processor := library.NewProcessor(ctx, libraryDir, dataDir, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 
 		library.EnqueueIndexTask(queue)
 
@@ -147,7 +155,7 @@ func main() {
 		}
 	}
 
-	srv := api.NewServer(*addr, state, assetRepo, libraryLocation, textual, frontendHandler())
+	srv := api.NewServer(*addr, state, assetRepo, libraryDir, dataDir, textual, frontendHandler())
 	if err := api.RunServer(ctx, srv, !*noBrowser); err != nil {
 		log.Printf("serve: %v", err)
 		return

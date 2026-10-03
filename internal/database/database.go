@@ -27,17 +27,16 @@ func init() {
 	})
 }
 
-// Open opens (creating if needed) the SQLite database under the library's
-// .imchlite directory. vec1Library is the path of the vec1 extension shared
+// Open opens (creating if needed) the SQLite database in the data
+// directory. vec1Library is the path of the vec1 extension shared
 // library to load on every connection.
-func Open(libraryLocation, vec1LibraryPath string) (*sql.DB, error) {
+func Open(dataDir, vec1LibraryPath string) (*sql.DB, error) {
 	vec1Library = vec1LibraryPath
-	dir := filepath.Join(libraryLocation, ".imchlite")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create library dir: %w", err)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	dbPath := filepath.Join(dir, "imchlite.db")
+	dbPath := filepath.Join(dataDir, "imchlite.db")
 
 	// 1. Resolve absolute path to guarantee uniform cross-platform URI formatting
 	absPath, err := filepath.Abs(dbPath)

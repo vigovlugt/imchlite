@@ -17,7 +17,7 @@ go build .
 
 - Frontend dev: `bun run dev` in `frontend/` (Vite proxies `/api` to `127.0.0.1:3000`, so run the Go backend alongside).
 - Frontend routes: TanStack Router file-based routes in `frontend/src/routes/`; `routeTree.gen.ts` is generated (by the Vite plugin on dev/build, or `bun run generate-routes`) — never edit it by hand.
-- Run app: `go run . --library-location <dir>` — listens on `127.0.0.1:3000` and opens a browser. The library dir gets a `.imchlite/` folder (SQLite db + thumbnails).
+- Run app: `go run . --library-dir <dir> [--data-dir <dir>]` — listens on `127.0.0.1:3000` and opens a browser. The SQLite db + thumbnails go in the data dir, which defaults to `<library-dir>/.imchlite/`.
 - Tests: `go test ./...` (`ffmpeg/` and `ai/` have tests; `ai/` needs onnxruntime, see below).
 
 ## NixOS

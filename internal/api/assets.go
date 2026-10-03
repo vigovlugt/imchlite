@@ -245,7 +245,7 @@ func parseChecksum(s string) ([]byte, bool) {
 }
 
 // registerAssetRoutes installs the asset endpoints on the mux.
-func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLocation string, textual *ai.ClipTextual) {
+func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDir, dataDir string, textual *ai.ClipTextual) {
 	mux.HandleFunc("GET /api/facets", func(w http.ResponseWriter, r *http.Request) {
 		f, err := assets.GetFacets(r.Context())
 		if err != nil {
@@ -283,7 +283,7 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLo
 				"filename": filepath.Base(relativePath),
 			}))
 		}
-		http.ServeFile(w, r, media.ResolveLibraryPath(libraryLocation, relativePath))
+		http.ServeFile(w, r, media.ResolveLibraryPath(libraryDir, relativePath))
 	})
 
 	// GET /api/thumb/{checksum} serves the generated webp thumbnail.
@@ -295,7 +295,7 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryLo
 		}
 
 		hexChecksum := hex.EncodeToString(checksum)
-		thumbPath := filepath.Join(libraryLocation, ".imchlite", "thumbnails",
+		thumbPath := filepath.Join(dataDir, "thumbnails",
 			hexChecksum[0:2], hexChecksum[2:4], hexChecksum+".webp")
 		w.Header().Set("Content-Type", "image/webp")
 		http.ServeFile(w, r, thumbPath)

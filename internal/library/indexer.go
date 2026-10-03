@@ -144,10 +144,11 @@ const upsertBatchSize = 1000
 // IndexLibrary walks the library and records the run's outcome in the given
 // indexer state. The walk holds the disk lock throughout, so processing of
 // the files it enqueues waits for it instead of making the disk seek
-// between directory reads and file reads.
-func IndexLibrary(ctx context.Context, libraryLocation string, d *disk.Disk, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
+// between directory reads and file reads. The data dir is skipped when it
+// lies inside the library.
+func IndexLibrary(ctx context.Context, libraryDir, dataDir string, d *disk.Disk, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
 	_, err := d.Do(ctx, func() error {
-		return walkLibrary(ctx, libraryLocation, fileRepo, queue, state)
+		return walkLibrary(ctx, libraryDir, dataDir, fileRepo, queue, state)
 	})
 	if err != nil {
 		state.fail(err)
@@ -157,7 +158,7 @@ func IndexLibrary(ctx context.Context, libraryLocation string, d *disk.Disk, fil
 	return nil
 }
 
-func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
+func walkLibrary(ctx context.Context, libraryDir, dataDir string, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
 	existingFiles, err := fileRepo.GetAll(ctx)
 	if err != nil {
 		return fmt.Errorf("snapshot files: %w", err)
@@ -255,7 +256,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 		}
 		inode := stat.inode
 
-		relativePath, err := filepath.Rel(libraryLocation, path)
+		relativePath, err := filepath.Rel(libraryDir, path)
 		if err != nil {
 			return fmt.Errorf("relativize %s: %w", path, err)
 		}
@@ -331,7 +332,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 			}
 			path := filepath.Join(dir, e.Name)
 			if e.IsDir() {
-				if e.Name == "@eaDir" || e.Name == "#recycle" || e.Name == "#snapshot" || e.Name == "System Volume Information" || e.Name == "$RECYCLE.BIN" {
+				if path == dataDir || e.Name == "@eaDir" || e.Name == "#recycle" || e.Name == "#snapshot" || e.Name == "System Volume Information" || e.Name == "$RECYCLE.BIN" {
 					continue
 				}
 				subdirs = append(subdirs, path)
@@ -354,7 +355,7 @@ func walkLibrary(ctx context.Context, libraryLocation string, fileRepo *reposito
 		return nil
 	}
 
-	err = walkDir(libraryLocation)
+	err = walkDir(libraryDir)
 	if err != nil {
 		return fmt.Errorf("walk library: %w", err)
 	}

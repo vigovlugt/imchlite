@@ -15,8 +15,8 @@ import (
 	"github.com/vigovlugt/imchlite/internal/media"
 )
 
-func applySidecars(libraryLocation, mediaPath string, asset *entity.Asset) {
-	absolutePath := media.ResolveLibraryPath(libraryLocation, mediaPath)
+func applySidecars(libraryDir, mediaPath string, asset *entity.Asset) {
+	absolutePath := media.ResolveLibraryPath(libraryDir, mediaPath)
 
 	applySnapchatSidecar(absolutePath, asset)
 	applyGoogleSidecar(absolutePath, asset)
