@@ -48,6 +48,24 @@ func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Ass
 	return &a, nil
 }
 
+// ClipEmbeddingByChecksum returns the id and stored clip embedding of the
+// asset with the given checksum. The embedding is nil if the asset exists but
+// has not been embedded yet; ok is false if no asset has that checksum.
+func (r *Asset) ClipEmbeddingByChecksum(ctx context.Context, checksum []byte) (id int64, embedding []byte, ok bool, err error) {
+	err = r.db.QueryRowContext(ctx,
+		`select a.id, e.embedding
+		 from assets a
+		 left join asset_clip_embeddings e on e.asset_id = a.id
+		 where a.checksum = ? and a.deleted_at is null`, checksum).Scan(&id, &embedding)
+	if err == sql.ErrNoRows {
+		return 0, nil, false, nil
+	}
+	if err != nil {
+		return 0, nil, false, fmt.Errorf("get clip embedding by checksum: %w", err)
+	}
+	return id, embedding, true, nil
+}
+
 // Insert adds a new asset row with all processing steps pending. If an
 // asset with the same checksum already exists (a concurrent worker won the
 // race) the insert is a no-op. It reports whether a row was inserted.
@@ -195,7 +213,10 @@ type AssetQuery struct {
 	Cursor *AssetCursor
 	// SimilarCursor is the keyset pagination position for similarity queries.
 	SimilarCursor *SimilarCursor
-	Limit         int
+	// ExcludeID leaves out the asset with this id, e.g. the source asset of
+	// a find-similar query. Zero excludes nothing.
+	ExcludeID int64
+	Limit     int
 }
 
 // hasOnlineFileCond restricts to assets that still have at least one copy
@@ -333,6 +354,10 @@ func assetFilterConds(q AssetQuery) ([]string, []any) {
 	if q.Country != nil {
 		conds = append(conds, "a.country = ?")
 		args = append(args, *q.Country)
+	}
+	if q.ExcludeID != 0 {
+		conds = append(conds, "a.id != ?")
+		args = append(args, q.ExcludeID)
 	}
 	if q.From != nil {
 		conds = append(conds, "coalesce(a.date_time_local, a.date_time) >= ?")

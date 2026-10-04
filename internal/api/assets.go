@@ -304,7 +304,12 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 	mux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
 		vals := r.URL.Query()
 		contextQuery := strings.TrimSpace(vals.Get("context_query"))
-		q, err := parseAssetQuery(vals, contextQuery != "")
+		similarTo := vals.Get("similar_to")
+		if contextQuery != "" && similarTo != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "context_query and similar_to are mutually exclusive"})
+			return
+		}
+		q, err := parseAssetQuery(vals, contextQuery != "" || similarTo != "")
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -317,19 +322,47 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 			limit = 1000
 		}
 
-		// context_query ranks assets by clip similarity to a text query
-		// instead of filtering them by date.
-		if contextQuery != "" {
+		// context_query ranks assets by clip similarity to a text query, and
+		// similar_to by similarity to another asset's image, instead of
+		// filtering them by date.
+		var embedding []byte
+		switch {
+		case contextQuery != "":
 			if textual == nil {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "text search unavailable"})
 				return
 			}
-			embedding, err := textual.Embed(r.Context(), contextQuery)
+			vec, err := textual.Embed(r.Context(), contextQuery)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
-			found, err := assets.QuerySimilar(r.Context(), utils.EncodeEmbedding(embedding), q)
+			embedding = utils.EncodeEmbedding(vec)
+		case similarTo != "":
+			checksum, ok := parseChecksum(similarTo)
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid similar_to checksum"})
+				return
+			}
+			id, stored, ok, err := assets.ClipEmbeddingByChecksum(r.Context(), checksum)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "asset not found"})
+				return
+			}
+			if stored == nil {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "asset has not been processed for search yet"})
+				return
+			}
+			// The source asset would always rank first; leave it out.
+			embedding, q.ExcludeID = stored, id
+		}
+
+		if embedding != nil {
+			found, err := assets.QuerySimilar(r.Context(), embedding, q)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return

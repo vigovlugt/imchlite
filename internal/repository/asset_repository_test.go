@@ -70,6 +70,22 @@ func TestQuerySimilar(t *testing.T) {
 	if got[0].Asset.ID != ids[0] || got[1].Asset.ID != ids[2] {
 		t.Fatalf("wrong order: got ids %d, %d; want %d, %d", got[0].Asset.ID, got[1].Asset.ID, ids[0], ids[2])
 	}
+
+	// Find-similar: query with asset 0's stored embedding, excluding itself.
+	id, stored, ok, err := repo.ClipEmbeddingByChecksum(ctx, []byte{0})
+	if err != nil || !ok || id != ids[0] || stored == nil {
+		t.Fatalf("clip embedding by checksum: id %d, ok %v, err %v", id, ok, err)
+	}
+	got, err = repo.QuerySimilar(ctx, stored, AssetQuery{Limit: 1, ExcludeID: id})
+	if err != nil {
+		t.Fatalf("query similar excluding source: %v", err)
+	}
+	if len(got) != 1 || got[0].Asset.ID != ids[2] {
+		t.Fatalf("got %v, want only asset %d", got, ids[2])
+	}
+	if _, _, ok, err := repo.ClipEmbeddingByChecksum(ctx, []byte{99}); err != nil || ok {
+		t.Fatalf("unknown checksum: ok %v, err %v", ok, err)
+	}
 }
 
 func TestQuerySimilarPagination(t *testing.T) {

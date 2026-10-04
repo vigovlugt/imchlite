@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"time"
 )
 
 type migration struct {
@@ -187,6 +189,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("migration gap: have %d, next is %d", version, m.version)
 		}
 
+		log.Printf("migration %d: running", m.version)
+		start := time.Now()
+
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin migration %d: %w", m.version, err)
@@ -204,6 +209,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %d: %w", m.version, err)
 		}
+		log.Printf("migration %d: done in %s", m.version, time.Since(start))
 
 		version = m.version
 	}

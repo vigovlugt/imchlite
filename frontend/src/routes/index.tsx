@@ -10,6 +10,7 @@ import {
   DownloadIcon,
   ImageIcon,
   PlayIcon,
+  SparklesIcon,
   StarIcon,
   XIcon,
 } from "lucide-react";
@@ -64,6 +65,8 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 interface AssetSearch {
   context_query?: string;
+  /** checksum of the asset to find similar assets to */
+  similar_to?: string;
   type?: "image" | "video";
   city?: string;
   country?: string;
@@ -77,6 +80,12 @@ function parseSearch(search: Record<string, unknown>): AssetSearch {
   const s: AssetSearch = {};
   if (typeof search.context_query === "string" && search.context_query)
     s.context_query = search.context_query;
+  // A similar-to search replaces a text search; never send both.
+  else if (
+    typeof search.similar_to === "string" &&
+    /^[0-9a-f]{64}$/.test(search.similar_to)
+  )
+    s.similar_to = search.similar_to;
   if (search.type === "image" || search.type === "video") s.type = search.type;
   if (typeof search.city === "string" && search.city) s.city = search.city;
   if (typeof search.country === "string" && search.country)
@@ -107,6 +116,7 @@ function filtersFromSearch(search: AssetSearch): AssetFilters {
     from: search.from,
     until: search.until,
     contextQuery: search.context_query,
+    similarTo: search.similar_to,
   };
 }
 
@@ -234,6 +244,7 @@ function Home() {
 
   const hasFilters =
     search.context_query !== undefined ||
+    search.similar_to !== undefined ||
     filters.type !== undefined ||
     filters.city !== undefined ||
     filters.country !== undefined ||
@@ -242,7 +253,8 @@ function Home() {
     filters.from !== undefined ||
     filters.until !== undefined;
 
-  const similarityMode = search.context_query !== undefined;
+  const similarityMode =
+    search.context_query !== undefined || search.similar_to !== undefined;
 
   return (
     <SidebarProvider>
@@ -256,11 +268,32 @@ function Home() {
       <SidebarInset>
         <header className="flex items-center gap-3 px-6 py-3">
           <SidebarTrigger />
-          <h1 className="text-lg font-semibold">
-            {similarityMode
-              ? `Similar to “${search.context_query}”`
-              : "Timeline"}
-          </h1>
+          {search.similar_to ? (
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-semibold">Similar to</h1>
+              <span className="inline-flex items-center gap-1 rounded-md border p-0.5 pr-1">
+                <img
+                  src={thumbUrl(search.similar_to)}
+                  alt=""
+                  className="size-7 rounded object-cover"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Clear similar search"
+                  onClick={() => setFilters({ similar_to: undefined })}
+                >
+                  <XIcon />
+                </Button>
+              </span>
+            </div>
+          ) : (
+            <h1 className="text-lg font-semibold">
+              {similarityMode
+                ? `Similar to “${search.context_query}”`
+                : "Timeline"}
+            </h1>
+          )}
           {assetsQuery.isFetching && !assetsQuery.isFetchingNextPage && (
             <Spinner className="text-muted-foreground" />
           )}
@@ -352,6 +385,13 @@ function Home() {
         <Lightbox
           asset={assets[lightboxIndex]}
           onClose={() => setLightboxIndex(undefined)}
+          onFindSimilar={() => {
+            setLightboxIndex(undefined);
+            // Start a fresh search: drop all other filters.
+            void navigate({
+              search: { similar_to: assets[lightboxIndex].checksum },
+            });
+          }}
           onPrev={
             lightboxIndex > 0
               ? () => setLightboxIndex(lightboxIndex - 1)
@@ -406,11 +446,13 @@ function AssetCell({ asset, onClick }: { asset: Asset; onClick: () => void }) {
 function Lightbox({
   asset,
   onClose,
+  onFindSimilar,
   onPrev,
   onNext,
 }: {
   asset: Asset;
   onClose: () => void;
+  onFindSimilar: () => void;
   onPrev?: () => void;
   onNext?: () => void;
 }) {
@@ -453,6 +495,16 @@ function Lightbox({
           )}
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            title="Find similar"
+            aria-label="Find similar"
+            onClick={onFindSimilar}
+            className="text-neutral-400 hover:bg-white/10 hover:text-white"
+          >
+            <SparklesIcon />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -625,6 +677,7 @@ function AppSidebar({
   const clearAll = () =>
     setFilters({
       context_query: undefined,
+      similar_to: undefined,
       type: undefined,
       city: undefined,
       country: undefined,
@@ -799,7 +852,13 @@ function AppSidebar({
           <SidebarGroupContent>
             <SearchInput
               value={search.context_query ?? ""}
-              onCommit={(v) => setFilters({ context_query: v || undefined })}
+              onCommit={(v) =>
+                setFilters({
+                  context_query: v || undefined,
+                  // A new text query replaces a similar-to search.
+                  ...(v ? { similar_to: undefined } : {}),
+                })
+              }
             />
           </SidebarGroupContent>
         </SidebarGroup>

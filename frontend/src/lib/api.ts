@@ -47,6 +47,8 @@ export interface AssetFilters {
   until?: number
   /** ranks by clip similarity to this text query instead of filtering by date */
   contextQuery?: string
+  /** ranks by clip similarity to the asset with this checksum */
+  similarTo?: string
 }
 
 export function thumbUrl(checksum: string): string {
@@ -113,6 +115,7 @@ function filtersToParams(f: AssetFilters, cursor?: string): string {
   if (f.from !== undefined) params.set('from', String(f.from))
   if (f.until !== undefined) params.set('until', String(f.until))
   if (f.contextQuery) params.set('context_query', f.contextQuery)
+  if (f.similarTo) params.set('similar_to', f.similarTo)
   params.set('limit', '200')
   if (cursor) params.set('cursor', cursor)
   return params.toString()
