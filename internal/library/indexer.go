@@ -153,7 +153,7 @@ const upsertBatchSize = 1000
 // created an asset yet, so none is enqueued twice while being processed
 // inline.
 func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes Excludes, d *disk.Disk, fileRepo *repository.File, assetRepo *repository.Asset, queue *queue.Queue[any], state *IndexerState, retryFailed bool) error {
-	_, err := d.Do(ctx, func() error {
+	_, err := d.Do(ctx, "index library", func() error {
 		if err := walkLibrary(ctx, libraryDir, dataDir, excludes, fileRepo, queue, state); err != nil {
 			return err
 		}

@@ -194,7 +194,7 @@ func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 		checksum []byte
 		timings  processTimings
 	)
-	waited, err := p.disk.Do(p.ctx, func() error {
+	waited, err := p.disk.Do(p.ctx, "checksum "+task.Path, func() error {
 		var err error
 		if info, err = os.Stat(absolutePath); err != nil {
 			return fmt.Errorf("stat %s: %w", absolutePath, err)
@@ -220,6 +220,13 @@ func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 			checksum, err = fileChecksum(absolutePath)
 		}
 		timings.checksumMs = time.Since(checksumStart).Milliseconds()
+		if err == nil && info.Size() > maxWarmFileSize {
+			// Large files are checksummed for minutes before the file's
+			// processed line; report them on their own.
+			elapsed := time.Since(checksumStart)
+			log.Printf("checksummed large file=%d path=%s size_mb=%d checksum_ms=%d mb_per_s=%.0f",
+				task.FileID, task.Path, info.Size()>>20, elapsed.Milliseconds(), float64(info.Size()>>20)/elapsed.Seconds())
+		}
 		if err != nil {
 			return fmt.Errorf("checksum %s: %w", absolutePath, err)
 		}
@@ -270,12 +277,13 @@ func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 
 // readDisk runs fn, which reads from the library's disk, under the disk
 // lock unless warm reports that the bytes fn reads are in the page cache.
-// It returns how long it waited for the lock.
-func (p *processor) readDisk(warm bool, fn func() error) (time.Duration, error) {
+// what describes the read for the disk's watch log. It returns how long it
+// waited for the lock.
+func (p *processor) readDisk(warm bool, what string, fn func() error) (time.Duration, error) {
 	if warm {
 		return 0, fn()
 	}
-	return p.disk.Do(p.ctx, fn)
+	return p.disk.Do(p.ctx, what, fn)
 }
 
 // shouldRun reports whether a step with the given status needs to run.
@@ -304,7 +312,7 @@ func (p *processor) processAsset(asset entity.Asset, path string, data []byte, w
 
 		started := time.Now()
 		absolutePath := media.ResolveLibraryPath(p.libraryDir, path)
-		waited, err := p.readDisk(warm, func() error {
+		waited, err := p.readDisk(warm, "thumbnail "+path, func() error {
 			return p.createThumbnail(asset.Checksum, absolutePath, data)
 		})
 		if err != nil {
@@ -350,7 +358,7 @@ func (p *processor) processClip(asset entity.Asset, thumbnailWarm bool) error {
 	started := time.Now()
 
 	var thumbnail []byte
-	waited, err := p.readDisk(thumbnailWarm, func() error {
+	waited, err := p.readDisk(thumbnailWarm, fmt.Sprintf("read thumbnail asset=%d", asset.ID), func() error {
 		var err error
 		thumbnail, err = os.ReadFile(thumbnailPath(p.dataDir, asset.Checksum))
 		return err
@@ -409,7 +417,7 @@ func EnqueuePendingAssetTasks(ctx context.Context, assets *repository.Asset, q *
 func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, warm bool, timings processTimings) (asset *entity.Asset, created bool, _ processTimings, _ error) {
 	metadataStart := time.Now()
 	var meta exiftoolbin.MediaMetadata
-	waited, err := p.readDisk(warm, func() error {
+	waited, err := p.readDisk(warm, "probe metadata "+task.Path, func() error {
 		var err error
 		meta, err = et.ProbeMetadata(absolutePath)
 		return err
@@ -446,7 +454,7 @@ func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolut
 	}
 
 	// Sidecars are separate files, not warmed by reading the media file.
-	waited, err = p.disk.Do(p.ctx, func() error {
+	waited, err = p.disk.Do(p.ctx, "sidecars "+task.Path, func() error {
 		applySidecars(p.libraryDir, task.Path, asset)
 		return nil
 	})

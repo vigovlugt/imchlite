@@ -135,6 +135,7 @@ func main() {
 
 		fileRepo := repository.NewFileRepository(db)
 		disk := disk.New()
+		go disk.Watch(ctx, 30*time.Second)
 		processor := library.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 
 		// Indexing also re-enqueues asset tasks lost by a previous restart.
