@@ -137,15 +137,8 @@ func main() {
 		disk := disk.New()
 		processor := library.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 
+		// Indexing also re-enqueues asset tasks lost by a previous restart.
 		library.EnqueueIndexTask(queue)
-
-		// Asset tasks live only in memory; the per-step status columns are the
-		// durable marker. Re-derive any tasks lost by a previous restart.
-		if n, err := library.EnqueuePendingAssetTasks(ctx, assetRepo, queue, *retryFailed); err != nil {
-			log.Fatalf("recover pending asset tasks: %v", err)
-		} else if n > 0 {
-			log.Printf("re-enqueued %d pending asset tasks", n)
-		}
 
 		for range *workers {
 			et, err := exiftoolbin.New(exiftoolDir)

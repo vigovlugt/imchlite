@@ -42,7 +42,7 @@ type indexTask struct{}
 // Task priorities. Higher values are processed first; tasks of equal
 // priority keep FIFO order. Indexing runs before anything else so the
 // library walk is not competing with processing for disk I/O. Asset tasks
-// are only queued when recovering work from a previous run; a file task
+// are only queued when recovering work from a previous run, after the walk; a file task
 // that creates an asset runs its asset task inline instead. They use the
 // lowest priority so new files are linked first and recovered work only
 // consumes idle worker capacity.
@@ -139,7 +139,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 		switch task := t.(type) {
 		case indexTask:
 			log.Printf("indexing library %s", p.libraryDir)
-			if err := IndexLibrary(p.ctx, p.libraryDir, p.dataDir, p.excludes, p.disk, p.files, q, state); err != nil {
+			if err := IndexLibrary(p.ctx, p.libraryDir, p.dataDir, p.excludes, p.disk, p.files, p.assets, q, state, p.retryFailed); err != nil {
 				log.Printf("indexing failed: %v", err)
 				continue
 			}

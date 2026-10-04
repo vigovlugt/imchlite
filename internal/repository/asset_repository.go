@@ -97,7 +97,7 @@ func (r *Asset) Insert(ctx context.Context, a *entity.Asset) (bool, error) {
 // GetAssetsWithPendingTasks returns the assets that still have a pending
 // processing step and an online file to process it from, e.g. because the
 // process restarted mid-task. With includeFailed, assets with a failed step
-// are returned too. They are re-enqueued at startup.
+// are returned too. They are re-enqueued after the library walk.
 func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context, includeFailed bool) ([]entity.Asset, error) {
 	statuses := "0"
 	if includeFailed {
