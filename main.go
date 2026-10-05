@@ -132,7 +132,7 @@ func main() {
 	}
 
 	assetRepo := repository.NewAsset(db)
-	state := tasks.NewIndexerState()
+	state := tasks.NewTaskState()
 	queue := tasks.NewQueue()
 	var wg sync.WaitGroup
 

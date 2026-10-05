@@ -74,7 +74,7 @@ func NewProcessor(ctx context.Context, libraryDir, dataDir string, excludes util
 
 // Worker consumes tasks from the queue until it is closed. Each worker runs
 // its own exiftool process.
-func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state *IndexerState) {
+func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state *TaskState) {
 	for {
 		t, ok := q.Pop()
 		if !ok {
@@ -87,7 +87,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 }
 
 // run processes a single task popped from q.
-func (p *processor) run(t any, et *exiftoolbin.Exiftool, q *queue.Queue[any], state *IndexerState) {
+func (p *processor) run(t any, et *exiftoolbin.Exiftool, q *queue.Queue[any], state *TaskState) {
 	if p.ctx.Err() != nil {
 		// Shutting down: drain the queue without touching disk.
 		if _, ok := t.(fileTask); ok {
