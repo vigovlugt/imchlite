@@ -54,9 +54,7 @@ func (p *processor) processThumbnail(asset entity.Asset, q *queue.Queue[any]) er
 	log.Printf("thumbnailed asset=%d path=%s total_ms=%d disk_wait_ms=%d", asset.ID, path, time.Since(started).Milliseconds(), waited.Milliseconds())
 
 	if p.shouldRun(asset.ClipStatus) {
-		// A thumbnail created here was just written, so it is in the page
-		// cache.
-		q.Push(clipTask{Asset: asset, ThumbnailWarm: asset.ThumbnailStatus == entity.TaskStatusOK}, clipPriority)
+		q.Push(clipTask{Asset: asset}, clipPriority)
 	}
 	return nil
 }

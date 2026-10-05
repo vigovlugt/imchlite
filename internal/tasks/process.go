@@ -5,7 +5,6 @@ package tasks
 import (
 	"context"
 	"log"
-	"time"
 
 	"github.com/vigovlugt/imchlite/internal/ai"
 	exiftoolbin "github.com/vigovlugt/imchlite/internal/clients/exiftool"
@@ -20,16 +19,16 @@ import (
 // Task priorities. Higher values are processed first; tasks of equal
 // priority keep FIFO order. Indexing runs before anything else so the
 // library walk is not competing with processing for disk I/O. Checksums
-// run next, so every file is linked to an asset first, then metadata, and
-// only then the slower thumbnail and clip steps, although a thumbnail does
-// not need the metadata. A clip task runs before the next thumbnail, while
-// the thumbnail it embeds is still in the page cache.
+// run next, so every file is linked to an asset first, then metadata, then
+// thumbnails, although a thumbnail does not need the metadata. Clip tasks
+// run last, so every asset is shown with its thumbnail before the clip
+// embeddings are computed.
 const (
 	indexPriority     = 4
 	checksumPriority  = 3
 	metadataPriority  = 2
-	clipPriority      = 1
-	thumbnailPriority = 0
+	thumbnailPriority = 1
+	clipPriority      = 0
 )
 
 // NewQueue creates the queue the indexer and processor feed and the workers
@@ -121,23 +120,12 @@ func (p *processor) run(t any, et *exiftoolbin.Exiftool, q *queue.Queue[any], st
 			log.Printf("thumbnail asset=%d: %v", task.Asset.ID, err)
 		}
 	case clipTask:
-		if err := p.processClip(task.Asset, task.ThumbnailWarm); err != nil {
+		if err := p.processClip(task.Asset); err != nil {
 			log.Printf("clip asset=%d: %v", task.Asset.ID, err)
 		}
 	default:
 		log.Printf("unknown task type %T", t)
 	}
-}
-
-// readDisk runs fn, which reads from the library's disk, under the disk
-// lock unless warm reports that the bytes fn reads are in the page cache.
-// what describes the read for the disk's watch log. It returns how long it
-// waited for the lock.
-func (p *processor) readDisk(warm bool, what string, fn func() error) (time.Duration, error) {
-	if warm {
-		return 0, fn()
-	}
-	return p.disk.Do(p.ctx, what, fn)
 }
 
 // shouldRun reports whether a step with the given status needs to run.

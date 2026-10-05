@@ -13,20 +13,16 @@ import (
 
 // clipTask embeds an asset's thumbnail with the clip model. Its outcome is
 // stored in the asset's clip status column, so a task re-enqueued at
-// startup is skipped once it finished. ThumbnailWarm reports that the
-// thumbnail was just written and is in the page cache, so reading it does
-// not take the disk lock.
+// startup is skipped once it finished.
 type clipTask struct {
-	Asset         entity.Asset
-	ThumbnailWarm bool
+	Asset entity.Asset
 }
 
 // processClip embeds the asset's thumbnail with the clip model and marks the
 // asset's clip step ok, or failed when there is no thumbnail or it cannot
-// be embedded. thumbnailWarm is as for clipTask. A clip step interrupted by
-// shutdown or a model that failed to load stays pending, to be retried on
-// the next startup.
-func (p *processor) processClip(asset entity.Asset, thumbnailWarm bool) error {
+// be embedded. A clip step interrupted by shutdown or a model that failed
+// to load stays pending, to be retried on the next startup.
+func (p *processor) processClip(asset entity.Asset) error {
 	if asset.ThumbnailStatus == entity.TaskStatusFailed {
 		// Without a thumbnail there is nothing to embed.
 		return p.assets.SetClipStatus(p.ctx, asset.ID, entity.TaskStatusFailed)
@@ -39,7 +35,7 @@ func (p *processor) processClip(asset entity.Asset, thumbnailWarm bool) error {
 	started := time.Now()
 
 	var thumbnail []byte
-	waited, err := p.readDisk(thumbnailWarm, fmt.Sprintf("read thumbnail asset=%d", asset.ID), func() error {
+	waited, err := p.disk.Do(p.ctx, fmt.Sprintf("read thumbnail asset=%d", asset.ID), func() error {
 		var err error
 		thumbnail, err = os.ReadFile(thumbnailPath(p.dataDir, asset.Checksum))
 		return err

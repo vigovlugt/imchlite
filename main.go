@@ -38,6 +38,7 @@ func main() {
 	dataDirFlag := flag.String("data-dir", "", "path to the imchlite data directory (database, thumbnails); defaults to <library-dir>/.imchlite")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
 	workers := flag.Int("workers", runtime.NumCPU(), "number of parallel asset processors")
+	maxDiskConcurrency := flag.Int("max-disk-concurrency", 1, "maximum number of simultaneous reads from the library's storage; 1 keeps reads sequential, which is fastest on spinning disks; 0 means no maximum")
 	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
 	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip) that failed in a previous run")
 	serveOnly := flag.Bool("serve-only", false, "only run the api server; do not index the library or process assets")
@@ -51,6 +52,9 @@ func main() {
 
 	if *serveOnly && *indexOnly {
 		log.Fatalf("--serve-only and --index-only are mutually exclusive")
+	}
+	if *maxDiskConcurrency < 0 {
+		log.Fatalf("--max-disk-concurrency must not be negative")
 	}
 
 	if *libraryDirFlag == "" {
@@ -159,7 +163,7 @@ func main() {
 		log.Printf("debug: set up clip visual model in %s", time.Since(start))
 
 		fileRepo := repository.NewFileRepository(db)
-		disk := disk.New()
+		disk := disk.New(*maxDiskConcurrency)
 		go disk.Watch(ctx, 30*time.Second)
 		processor := tasks.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 
