@@ -49,10 +49,15 @@ type Queue[T any] struct {
 	items    priorityHeap[T]
 	nextSeq  uint64
 	closed   bool
+	// inflight counts items popped but not yet marked Done.
+	inflight int
+	// idle is closed once the queue is empty with no items in flight.
+	idle     chan struct{}
+	idleOnce sync.Once
 }
 
 func New[T any]() *Queue[T] {
-	q := &Queue[T]{}
+	q := &Queue[T]{idle: make(chan struct{})}
 	q.notEmpty = sync.NewCond(&q.mu)
 	return q
 }
@@ -83,7 +88,26 @@ func (q *Queue[T]) Pop() (v T, ok bool) {
 		return zero, false
 	}
 	item := heap.Pop(&q.items).(priorityQueueItem[T])
+	q.inflight++
 	return item.value, true
+}
+
+// Done marks an item returned by Pop as finished. Callers must call it once
+// per popped item, after any items it pushes have been pushed.
+func (q *Queue[T]) Done() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.inflight--
+	if q.inflight == 0 && q.items.Len() == 0 {
+		q.idleOnce.Do(func() { close(q.idle) })
+	}
+}
+
+// Idle returns a channel that is closed the first time the queue is empty
+// with no popped items still in flight. Since items are only pushed by
+// in-flight work, no more items will arrive after that.
+func (q *Queue[T]) Idle() <-chan struct{} {
+	return q.idle
 }
 
 func (q *Queue[T]) Close() {

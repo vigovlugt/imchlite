@@ -1,4 +1,4 @@
-package library
+package tasks
 
 import (
 	"cmp"
@@ -17,7 +17,18 @@ import (
 	"github.com/vigovlugt/imchlite/internal/media"
 	"github.com/vigovlugt/imchlite/internal/queue"
 	"github.com/vigovlugt/imchlite/internal/repository"
+	"github.com/vigovlugt/imchlite/internal/utils"
 )
+
+// indexTask walks the library, enqueueing asset tasks for new and changed
+// files.
+type indexTask struct{}
+
+// EnqueueIndexTask schedules a walk of the library with the highest
+// priority.
+func EnqueueIndexTask(q *queue.Queue[any]) {
+	q.Push(indexTask{}, indexPriority)
+}
 
 // IndexerState tracks live progress of the background indexer so the api can
 // report on it.
@@ -152,7 +163,7 @@ const upsertBatchSize = 1000
 // online. This still runs under the disk lock: no file task can have
 // created an asset yet, so none is enqueued twice while being processed
 // inline.
-func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes Excludes, d *disk.Disk, fileRepo *repository.File, assetRepo *repository.Asset, queue *queue.Queue[any], state *IndexerState, retryFailed bool) error {
+func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes utils.Excludes, d *disk.Disk, fileRepo *repository.File, assetRepo *repository.Asset, queue *queue.Queue[any], state *IndexerState, retryFailed bool) error {
 	_, err := d.Do(ctx, "index library", func() error {
 		if err := walkLibrary(ctx, libraryDir, dataDir, excludes, fileRepo, queue, state); err != nil {
 			return err
@@ -176,7 +187,7 @@ func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes Excl
 	return nil
 }
 
-func walkLibrary(ctx context.Context, libraryDir, dataDir string, excludes Excludes, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
+func walkLibrary(ctx context.Context, libraryDir, dataDir string, excludes utils.Excludes, fileRepo *repository.File, queue *queue.Queue[any], state *IndexerState) error {
 	existingFiles, err := fileRepo.GetAll(ctx)
 	if err != nil {
 		return fmt.Errorf("snapshot files: %w", err)

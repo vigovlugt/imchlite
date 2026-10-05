@@ -20,11 +20,20 @@ import (
 	"github.com/vigovlugt/imchlite/internal/clients/vec1"
 	"github.com/vigovlugt/imchlite/internal/database"
 	"github.com/vigovlugt/imchlite/internal/disk"
-	"github.com/vigovlugt/imchlite/internal/library"
 	"github.com/vigovlugt/imchlite/internal/repository"
+	"github.com/vigovlugt/imchlite/internal/tasks"
+	"github.com/vigovlugt/imchlite/internal/utils"
 )
 
 func main() {
+	// Deferred first so it runs last, after the other deferred cleanups.
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
+
 	libraryDirFlag := flag.String("library-dir", "", "path to the imchlite library")
 	dataDirFlag := flag.String("data-dir", "", "path to the imchlite data directory (database, thumbnails); defaults to <library-dir>/.imchlite")
 	addr := flag.String("addr", "127.0.0.1:3000", "address the api server listens on")
@@ -32,12 +41,17 @@ func main() {
 	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
 	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip) that failed in a previous run")
 	serveOnly := flag.Bool("serve-only", false, "only run the api server; do not index the library or process assets")
-	var excludes library.Excludes
+	indexOnly := flag.Bool("index-only", false, "index the library and process all assets, then exit; do not run the api server")
+	var excludes utils.Excludes
 	flag.Func("exclude", "glob of library paths or names to skip while indexing, e.g. \"*.mov\" or \"Directory\" (repeatable)", func(v string) error {
 		excludes = append(excludes, v)
 		return nil
 	})
 	flag.Parse()
+
+	if *serveOnly && *indexOnly {
+		log.Fatalf("--serve-only and --index-only are mutually exclusive")
+	}
 
 	if *libraryDirFlag == "" {
 		if cwd, err := os.Getwd(); err == nil && filepath.Base(cwd) == ".imchlite" {
@@ -70,19 +84,24 @@ func main() {
 		}
 	}()
 
-	start := time.Now()
-	textualDir, err := ai.SetupTextual(ctx)
-	if err != nil {
-		log.Fatalf("download clip textual model: %v", err)
+	// The textual model only serves search queries, so the api needs it but
+	// indexing does not.
+	var textual *ai.ClipTextual
+	if !*indexOnly {
+		start := time.Now()
+		textualDir, err := ai.SetupTextual(ctx)
+		if err != nil {
+			log.Fatalf("download clip textual model: %v", err)
+		}
+		textual, err = ai.NewClipTextual(textualDir, rt)
+		if err != nil {
+			log.Fatalf("create clip textual model: %v", err)
+		}
+		defer textual.Close()
+		log.Printf("debug: set up clip textual model in %s", time.Since(start))
 	}
-	textual, err := ai.NewClipTextual(textualDir, rt)
-	if err != nil {
-		log.Fatalf("create clip textual model: %v", err)
-	}
-	defer textual.Close()
-	log.Printf("debug: set up clip textual model in %s", time.Since(start))
 
-	start = time.Now()
+	start := time.Now()
 	vec1Dir, err := vec1.Setup()
 	if err != nil {
 		log.Fatalf("extract vec1 extension: %v", err)
@@ -113,8 +132,8 @@ func main() {
 	}
 
 	assetRepo := repository.NewAsset(db)
-	state := library.NewIndexerState()
-	queue := library.NewQueue()
+	state := tasks.NewIndexerState()
+	queue := tasks.NewQueue()
 	var wg sync.WaitGroup
 
 	if *serveOnly {
@@ -142,10 +161,10 @@ func main() {
 		fileRepo := repository.NewFileRepository(db)
 		disk := disk.New()
 		go disk.Watch(ctx, 30*time.Second)
-		processor := library.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
+		processor := tasks.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 
 		// Indexing also re-enqueues asset tasks lost by a previous restart.
-		library.EnqueueIndexTask(queue)
+		tasks.EnqueueIndexTask(queue)
 
 		for range *workers {
 			et, err := exiftoolbin.New(exiftoolDir)
@@ -160,17 +179,32 @@ func main() {
 		}
 	}
 
-	srv := api.NewServer(*addr, state, assetRepo, libraryDir, dataDir, textual, f, frontendHandler())
-	if err := api.RunServer(ctx, srv, !*noBrowser); err != nil {
-		log.Printf("serve: %v", err)
-		return
+	if *indexOnly {
+		// Every task is pushed by the initial index task or by a task
+		// in flight, so an idle queue means all work is done.
+		select {
+		case <-queue.Idle():
+			log.Printf("all tasks finished, exiting")
+		case <-ctx.Done():
+		}
+	} else {
+		srv := api.NewServer(*addr, state, assetRepo, libraryDir, dataDir, textual, f, frontendHandler())
+		if err := api.RunServer(ctx, srv, !*noBrowser); err != nil {
+			log.Printf("serve: %v", err)
+			return
+		}
 	}
 
-	// Server stopped (signal received): the canceled context stops an
-	// in-progress walk; close the queue so workers drain it and exit. Pushes racing the
+	// Server stopped or all tasks finished (or signal received): the
+	// canceled context stops an in-progress walk; close the queue so workers
+	// drain it and exit. Pushes racing the
 	// close are no-ops — any task dropped that way stays pending in the
 	// database and is re-enqueued on the next startup. The extracted
 	// ffmpeg/exiftool/clip cache stays on disk for the next run.
 	queue.Close()
 	wg.Wait()
+
+	if *indexOnly && state.Status().Failed {
+		exitCode = 1
+	}
 }

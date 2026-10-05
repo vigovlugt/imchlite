@@ -18,6 +18,7 @@ go build .
 - Frontend dev: `bun run dev` in `frontend/` (Vite proxies `/api` to `127.0.0.1:3000`, so run the Go backend alongside).
 - Frontend routes: TanStack Router file-based routes in `frontend/src/routes/`; `routeTree.gen.ts` is generated (by the Vite plugin on dev/build, or `bun run generate-routes`) — never edit it by hand.
 - Run app: `go run . --library-dir <dir> [--data-dir <dir>]` — listens on `127.0.0.1:3000` and opens a browser. The SQLite db + thumbnails go in the data dir, which defaults to `<library-dir>/.imchlite/`.
+- Index without serving: `go run . --library-dir <dir> --index-only` — indexes and processes all assets, then exits once the task queue is idle (no server, no browser; exits 1 if the library walk failed). `--serve-only` is the opposite: serve without indexing.
 - Tests: `go test ./...` (`internal/clients/ffmpeg/` and `ai/` have tests; `ai/` needs onnxruntime, see below).
 
 ## NixOS
@@ -43,4 +44,4 @@ The textual encoder links `github.com/daulet/tokenizers` via cgo, which needs a 
 
 ## Layout
 
-Backend packages live in `internal/`. Go wrappers around external libraries and tools (exiftool, ffmpeg, hfmodel, onnxruntime, tokenizers, vec1) go in `internal/clients/`. `testdir/` and `testdir2/` are local sample libraries used for manual testing (gitignored).
+Backend packages live in `internal/`. Go wrappers around external libraries and tools (exiftool, ffmpeg, hfmodel, onnxruntime, tokenizers, vec1) go in `internal/clients/`. Processing lives in `internal/tasks/`: `process.go` holds the queue, priorities and worker loop shared by all tasks, and each task type has its own file (`index.go`, `file.go`, `metadata.go`, `asset.go`, `thumbnail.go`, `clip.go`). `tests/` is a small committed sample library for manual testing (`go run . --library-dir tests`).

@@ -13,8 +13,8 @@ import (
 
 	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/clients/ffmpeg"
-	"github.com/vigovlugt/imchlite/internal/library"
 	"github.com/vigovlugt/imchlite/internal/repository"
+	"github.com/vigovlugt/imchlite/internal/tasks"
 )
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -27,7 +27,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 // NewServer builds the http server exposing the api and the embedded
 // frontend.
-func NewServer(addr string, state *library.IndexerState, assets *repository.Asset, libraryDir, dataDir string, textual *ai.ClipTextual, ff *ffmpeg.FFmpeg, frontend http.Handler) *http.Server {
+func NewServer(addr string, state *tasks.IndexerState, assets *repository.Asset, libraryDir, dataDir string, textual *ai.ClipTextual, ff *ffmpeg.FFmpeg, frontend http.Handler) *http.Server {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {

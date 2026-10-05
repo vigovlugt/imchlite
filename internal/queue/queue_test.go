@@ -164,6 +164,36 @@ func TestBlockingPopReceivesPushedValue(t *testing.T) {
 	}
 }
 
+func TestIdleAfterInFlightWorkDone(t *testing.T) {
+	q := New[int]()
+	q.Push(1, 0)
+	if _, ok := q.Pop(); !ok {
+		t.Fatal("unexpected empty queue")
+	}
+	// Empty, but the popped item is still in flight and may push more.
+	select {
+	case <-q.Idle():
+		t.Fatal("Idle() closed while an item is in flight")
+	default:
+	}
+	q.Push(2, 0)
+	q.Done()
+	select {
+	case <-q.Idle():
+		t.Fatal("Idle() closed while an item is queued")
+	default:
+	}
+	if _, ok := q.Pop(); !ok {
+		t.Fatal("unexpected empty queue")
+	}
+	q.Done()
+	select {
+	case <-q.Idle():
+	default:
+		t.Fatal("Idle() not closed after all work is done")
+	}
+}
+
 func ExampleQueue() {
 	q := New[string]()
 	q.Push("hello", 0)
