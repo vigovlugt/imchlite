@@ -163,7 +163,7 @@ func main() {
 		go disk.Watch(ctx, 30*time.Second)
 		processor := tasks.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
 
-		// Indexing also re-enqueues asset tasks lost by a previous restart.
+		// Indexing also re-enqueues thumbnail and clip tasks lost by a previous restart.
 		tasks.EnqueueIndexTask(queue)
 
 		for range *workers {

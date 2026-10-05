@@ -44,4 +44,4 @@ The textual encoder links `github.com/daulet/tokenizers` via cgo, which needs a 
 
 ## Layout
 
-Backend packages live in `internal/`. Go wrappers around external libraries and tools (exiftool, ffmpeg, hfmodel, onnxruntime, tokenizers, vec1) go in `internal/clients/`. Processing lives in `internal/tasks/`: `process.go` holds the queue, priorities and worker loop shared by all tasks, and each task type has its own file (`index.go`, `file.go`, `metadata.go`, `asset.go`, `thumbnail.go`, `clip.go`). `tests/` is a small committed sample library for manual testing (`go run . --library-dir tests`).
+Backend packages live in `internal/`. Go wrappers around external libraries and tools (exiftool, ffmpeg, hfmodel, onnxruntime, tokenizers, vec1) go in `internal/clients/`. Processing lives in `internal/tasks/`: `process.go` holds the queue, priorities and worker loop shared by all tasks, and each task type has its own file (`index.go`, `file.go`, `metadata.go`, `thumbnail.go`, `clip.go`). `tests/` is a small committed sample library for manual testing (`go run . --library-dir tests`).

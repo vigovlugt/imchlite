@@ -10,6 +10,7 @@ import (
 
 	"github.com/vigovlugt/imchlite/internal/entity"
 	"github.com/vigovlugt/imchlite/internal/media"
+	"github.com/vigovlugt/imchlite/internal/queue"
 )
 
 const (
@@ -17,15 +18,26 @@ const (
 	thumbnailQuality = 80
 )
 
-// processThumbnail generates the asset's webp thumbnail and stores the
-// step's outcome in asset.ThumbnailStatus and the database. path, data and
-// warm are as for processAsset. warmThumbnail reports that the thumbnail
-// was just written, so it is in the page cache.
-func (p *processor) processThumbnail(asset *entity.Asset, path string, data []byte, warm bool) (warmThumbnail bool, _ error) {
+// thumbnailTask generates an asset's thumbnail, then enqueues its clip
+// task. Its outcome is stored in the asset's thumbnail status column, so a
+// task re-enqueued at startup is skipped once it finished.
+type thumbnailTask struct {
+	Asset entity.Asset
+}
+
+// processThumbnail generates the asset's webp thumbnail, stores the step's
+// outcome in the database and, if the asset's clip step needs to run,
+// enqueues its clip task on q. path and data are the file the asset was
+// just created from and its bytes when already read; with an empty path an
+// online file of the asset is looked up. warm reports that the file at path
+// was just read and is in the page cache, so reading it again does not
+// take the disk lock. A thumbnail interrupted by shutdown stays pending, to
+// be retried on the next startup.
+func (p *processor) processThumbnail(asset entity.Asset, path string, data []byte, warm bool, q *queue.Queue[any]) error {
 	if path == "" {
 		var err error
 		if path, _, err = p.assets.LiveFileForChecksum(p.ctx, asset.Checksum); err != nil {
-			return false, fmt.Errorf("find file for asset: %w", err)
+			return fmt.Errorf("find file for asset: %w", err)
 		}
 	}
 
@@ -36,19 +48,24 @@ func (p *processor) processThumbnail(asset *entity.Asset, path string, data []by
 	})
 	if err != nil {
 		if p.ctx.Err() != nil {
-			return false, fmt.Errorf("thumbnail for %s: %w", path, err)
+			return fmt.Errorf("thumbnail for %s: %w", path, err)
 		}
 		log.Printf("thumbnail for %s: %v", path, err)
 		asset.ThumbnailStatus = entity.TaskStatusFailed
 	} else {
 		asset.ThumbnailStatus = entity.TaskStatusOK
-		warmThumbnail = true
 	}
 	if err := p.assets.SetThumbnailStatus(p.ctx, asset.ID, asset.ThumbnailStatus); err != nil {
-		return false, err
+		return err
 	}
 	log.Printf("thumbnailed asset=%d path=%s total_ms=%d disk_wait_ms=%d", asset.ID, path, time.Since(started).Milliseconds(), waited.Milliseconds())
-	return warmThumbnail, nil
+
+	if p.shouldRun(asset.ClipStatus) {
+		// A thumbnail created here was just written, so it is in the page
+		// cache.
+		q.Push(clipTask{Asset: asset, ThumbnailWarm: asset.ThumbnailStatus == entity.TaskStatusOK}, clipPriority)
+	}
+	return nil
 }
 
 func (p *processor) createThumbnail(checksum []byte, absolutePath string, data []byte) error {

@@ -1,4 +1,5 @@
 - Move exiftool to asset task
+- Task status redo
 - OCR
 - Face recognition.
 - Static link ffmpeg, exiftool, onnxruntime, tokenizers.

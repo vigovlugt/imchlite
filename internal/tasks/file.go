@@ -10,6 +10,7 @@ import (
 
 	exiftoolbin "github.com/vigovlugt/imchlite/internal/clients/exiftool"
 	"github.com/vigovlugt/imchlite/internal/media"
+	"github.com/vigovlugt/imchlite/internal/queue"
 )
 
 // fileTask checksums a file and links it to its (possibly new) asset.
@@ -52,13 +53,14 @@ type processTimings struct {
 
 // processFile checksums a file, stores (or reuses) its asset, and links the
 // file row to the asset. An asset row existing implies its metadata was
-// already extracted. When this task created the asset, the asset task
-// follows immediately, reusing the bytes already read for checksumming.
+// already extracted. When this task created the asset, its thumbnail task
+// runs inline, reusing the bytes already read for checksumming, and
+// enqueues the clip task on q.
 //
 // The file is read in full under the disk lock. Afterwards its bytes are in
 // the OS page cache, so unless the file is too large for that to be
 // assumed, the later exiftool and ffmpeg reads run without the lock.
-func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
+func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool, q *queue.Queue[any]) error {
 	started := time.Now()
 
 	absolutePath := media.ResolveLibraryPath(p.libraryDir, task.Path)
@@ -141,10 +143,10 @@ func (p *processor) processFile(task fileTask, et *exiftoolbin.Exiftool) error {
 	)
 
 	if created {
-		// The file is linked, so a failing asset step does not fail the file:
+		// The file is linked, so a failing thumbnail does not fail the file:
 		// it stays pending or failed in its own status column.
-		if err := p.processAsset(*asset, task.Path, data, warm); err != nil {
-			log.Printf("process asset=%d: %v", asset.ID, err)
+		if err := p.processThumbnail(*asset, task.Path, data, warm, q); err != nil {
+			log.Printf("thumbnail asset=%d: %v", asset.ID, err)
 		}
 	}
 	return nil

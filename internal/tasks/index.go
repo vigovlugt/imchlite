@@ -19,7 +19,7 @@ import (
 	"github.com/vigovlugt/imchlite/internal/utils"
 )
 
-// indexTask walks the library, enqueueing asset tasks for new and changed
+// indexTask walks the library, enqueueing file tasks for new and changed
 // files.
 type indexTask struct{}
 
@@ -75,7 +75,7 @@ const upsertBatchSize = 1000
 // between directory reads and file reads. The data dir is skipped when it
 // lies inside the library, as are paths matching excludes.
 //
-// After the walk, asset tasks lost by a previous restart are re-enqueued
+// After the walk, thumbnail and clip tasks lost by a previous restart are re-enqueued
 // (see EnqueuePendingAssetTasks), so they see which files the walk found
 // online. This still runs under the disk lock: no file task can have
 // created an asset yet, so none is enqueued twice while being processed
@@ -85,7 +85,7 @@ func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes util
 		if err := walkLibrary(ctx, libraryDir, dataDir, excludes, fileRepo, queue, state); err != nil {
 			return err
 		}
-		// Asset tasks live only in memory; the per-step status columns are
+		// Thumbnail and clip tasks live only in memory; the per-step status columns are
 		// the durable marker.
 		n, err := EnqueuePendingAssetTasks(ctx, assetRepo, queue, retryFailed)
 		if err != nil {
