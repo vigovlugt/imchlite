@@ -5,9 +5,11 @@ package onnxruntime
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 	"github.com/vigovlugt/imchlite/internal/cachedir"
@@ -34,6 +36,37 @@ func Setup() error {
 	}
 
 	return nil
+}
+
+// Runtime is an ONNX Runtime initialized in the background by Load.
+type Runtime struct {
+	// ready is closed once initialization finished; err is set before.
+	ready chan struct{}
+	err   error
+}
+
+// Load starts initializing the ONNX Runtime in the background, as Setup
+// does. Loading the shared library takes tens of milliseconds, so callers
+// that create sessions should Wait for it first instead of blocking startup.
+func Load() *Runtime {
+	r := &Runtime{ready: make(chan struct{})}
+	go func() {
+		defer close(r.ready)
+
+		start := time.Now()
+		r.err = Setup()
+		if r.err == nil {
+			log.Printf("debug: onnxruntime initialized in %s", time.Since(start))
+		}
+	}()
+	return r
+}
+
+// Wait blocks until the background initialization finished and returns its
+// error, if any.
+func (r *Runtime) Wait() error {
+	<-r.ready
+	return r.err
 }
 
 // Shutdown releases the ONNX Runtime environment.

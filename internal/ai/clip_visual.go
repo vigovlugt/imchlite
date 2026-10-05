@@ -17,6 +17,7 @@ import (
 	"golang.org/x/image/webp"
 
 	"github.com/vigovlugt/imchlite/internal/cachedir"
+	"github.com/vigovlugt/imchlite/internal/clients/onnxruntime"
 	"github.com/vigovlugt/imchlite/internal/hfmodel"
 )
 
@@ -70,8 +71,8 @@ func Setup(ctx context.Context) (string, error) {
 
 // NewClipVisual creates a new ClipVisual model using the model file in the
 // directory created by Setup. The inference session is created in the
-// background; Embed and Close wait for it to finish.
-func NewClipVisual(dir string) (*ClipVisual, error) {
+// background once rt is initialized; Embed and Close wait for it to finish.
+func NewClipVisual(dir string, rt *onnxruntime.Runtime) (*ClipVisual, error) {
 	path := filepath.Join(dir, visualModelFilename)
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("visual model: %w", err)
@@ -80,6 +81,11 @@ func NewClipVisual(dir string) (*ClipVisual, error) {
 	c := &ClipVisual{Path: path, ready: make(chan struct{})}
 	go func() {
 		defer close(c.ready)
+
+		if err := rt.Wait(); err != nil {
+			c.loadErr = fmt.Errorf("load visual model: %w", err)
+			return
+		}
 
 		start := time.Now()
 		session, err := ort.NewSession(path, nil)

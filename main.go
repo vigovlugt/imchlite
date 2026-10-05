@@ -61,27 +61,33 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The runtime loads in the background; the clip models wait for it
+	// before creating their sessions.
+	rt := onnxruntime.Load()
+	go func() {
+		if err := rt.Wait(); err != nil {
+			log.Fatalf("setup onnxruntime: %v", err)
+		}
+	}()
+
 	start := time.Now()
-	if err := onnxruntime.Setup(); err != nil {
-		log.Fatalf("setup onnxruntime: %v", err)
-	}
 	textualDir, err := ai.SetupTextual(ctx)
 	if err != nil {
 		log.Fatalf("download clip textual model: %v", err)
 	}
-	textual, err := ai.NewClipTextual(textualDir)
+	textual, err := ai.NewClipTextual(textualDir, rt)
 	if err != nil {
 		log.Fatalf("create clip textual model: %v", err)
 	}
 	defer textual.Close()
-	log.Printf("debug: downloaded clip textual model in %s", time.Since(start))
+	log.Printf("debug: set up clip textual model in %s", time.Since(start))
 
 	start = time.Now()
 	vec1Dir, err := vec1.Setup()
 	if err != nil {
 		log.Fatalf("extract vec1 extension: %v", err)
 	}
-	log.Printf("debug: extracted vec1 extension in %s", time.Since(start))
+	log.Printf("debug: set up vec1 extension in %s", time.Since(start))
 
 	db, err := database.Open(dataDir, vec1.LibraryPath(vec1Dir))
 	if err != nil {
@@ -100,7 +106,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("extract ffmpeg: %v", err)
 	}
-	log.Printf("debug: extracted ffmpeg in %s", time.Since(start))
+	log.Printf("debug: set up ffmpeg in %s", time.Since(start))
 	f, err := ffmpeg.New(ffmpegDir)
 	if err != nil {
 		log.Fatalf("start ffmpeg: %v", err)
@@ -119,19 +125,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("extract exiftool: %v", err)
 		}
-		log.Printf("debug: extracted exiftool in %s", time.Since(start))
+		log.Printf("debug: set up exiftool in %s", time.Since(start))
 
 		start = time.Now()
 		clipDir, err := ai.Setup(ctx)
 		if err != nil {
 			log.Fatalf("download clip visual model: %v", err)
 		}
-		clip, err := ai.NewClipVisual(clipDir)
+		clip, err := ai.NewClipVisual(clipDir, rt)
 		if err != nil {
 			log.Fatalf("create clip visual model: %v", err)
 		}
 		defer clip.Close()
-		log.Printf("debug: downloaded clip visual model in %s", time.Since(start))
+		log.Printf("debug: set up clip visual model in %s", time.Since(start))
 
 		fileRepo := repository.NewFileRepository(db)
 		disk := disk.New()

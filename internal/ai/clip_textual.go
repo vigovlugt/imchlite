@@ -12,6 +12,7 @@ import (
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 
 	"github.com/vigovlugt/imchlite/internal/cachedir"
+	"github.com/vigovlugt/imchlite/internal/clients/onnxruntime"
 	"github.com/vigovlugt/imchlite/internal/hfmodel"
 )
 
@@ -58,8 +59,9 @@ func SetupTextual(ctx context.Context) (string, error) {
 
 // NewClipTextual creates a new ClipTextual model using the model files in the
 // directory created by SetupTextual. The tokenizer and inference session are
-// created in the background; Embed and Close wait for them to finish.
-func NewClipTextual(dir string) (*ClipTextual, error) {
+// created in the background once rt is initialized; Embed and Close wait for
+// them to finish.
+func NewClipTextual(dir string, rt *onnxruntime.Runtime) (*ClipTextual, error) {
 	path := filepath.Join(dir, textualModelFilename)
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("textual model: %w", err)
@@ -68,6 +70,11 @@ func NewClipTextual(dir string) (*ClipTextual, error) {
 	c := &ClipTextual{Path: path, ready: make(chan struct{})}
 	go func() {
 		defer close(c.ready)
+
+		if err := rt.Wait(); err != nil {
+			c.loadErr = fmt.Errorf("load textual model: %w", err)
+			return
+		}
 
 		start := time.Now()
 

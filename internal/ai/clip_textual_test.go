@@ -10,7 +10,8 @@ import (
 )
 
 func TestClipTextualEmbed(t *testing.T) {
-	if err := onnxruntime.Setup(); err != nil {
+	rt := onnxruntime.Load()
+	if err := rt.Wait(); err != nil {
 		t.Skipf("onnxruntime: %v", err)
 	}
 
@@ -19,7 +20,7 @@ func TestClipTextualEmbed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	clip, err := NewClipTextual(dir)
+	clip, err := NewClipTextual(dir, rt)
 	if err != nil {
 		t.Fatal(err)
 	}

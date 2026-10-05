@@ -6,8 +6,10 @@ package cachedir
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Ensure returns the cache directory named name, creating and populating it
@@ -38,6 +40,7 @@ func Ensure(name string, populate func(dir string) error) (string, error) {
 	}
 	defer os.RemoveAll(staging)
 
+	start := time.Now()
 	if err := populate(staging); err != nil {
 		return "", fmt.Errorf("populate %s: %w", name, err)
 	}
@@ -50,5 +53,6 @@ func Ensure(name string, populate func(dir string) error) (string, error) {
 		}
 		return "", fmt.Errorf("move %s into cache: %w", name, err)
 	}
+	log.Printf("debug: populated %s in %s", target, time.Since(start))
 	return target, nil
 }
