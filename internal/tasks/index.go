@@ -19,7 +19,7 @@ import (
 	"github.com/vigovlugt/imchlite/internal/utils"
 )
 
-// indexTask walks the library, enqueueing file tasks for new and changed
+// indexTask walks the library, enqueueing checksum tasks for new and changed
 // files.
 type indexTask struct{}
 
@@ -75,11 +75,11 @@ const upsertBatchSize = 1000
 // between directory reads and file reads. The data dir is skipped when it
 // lies inside the library, as are paths matching excludes.
 //
-// After the walk, thumbnail and clip tasks lost by a previous restart are re-enqueued
-// (see EnqueuePendingAssetTasks), so they see which files the walk found
-// online. This still runs under the disk lock: no file task can have
-// created an asset yet, so none is enqueued twice while being processed
-// inline.
+// After the walk, metadata, thumbnail and clip tasks lost by a previous
+// restart are re-enqueued (see EnqueuePendingTasks), so they see which
+// files the walk found online. This still runs under the disk lock: no
+// checksum task can have created an asset yet, so no metadata task is
+// enqueued twice.
 func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes utils.Excludes, d *disk.Disk, fileRepo *repository.File, assetRepo *repository.Asset, queue *queue.Queue[any], state *TaskState, retryFailed bool) error {
 	_, err := d.Do(ctx, "index library", func() error {
 		if err := walkLibrary(ctx, libraryDir, dataDir, excludes, fileRepo, queue, state); err != nil {
@@ -87,12 +87,12 @@ func IndexLibrary(ctx context.Context, libraryDir, dataDir string, excludes util
 		}
 		// Thumbnail and clip tasks live only in memory; the per-step status columns are
 		// the durable marker.
-		n, err := EnqueuePendingAssetTasks(ctx, assetRepo, queue, retryFailed)
+		n, err := EnqueuePendingTasks(ctx, assetRepo, queue, retryFailed)
 		if err != nil {
-			return fmt.Errorf("recover pending asset tasks: %w", err)
+			return fmt.Errorf("recover pending metadata, thumbnail and clip tasks: %w", err)
 		}
 		if n > 0 {
-			log.Printf("re-enqueued %d pending asset tasks", n)
+			log.Printf("re-enqueued %d pending metadata, thumbnail and clip tasks", n)
 		}
 		return nil
 	})
@@ -144,8 +144,8 @@ func walkLibrary(ctx context.Context, libraryDir, dataDir string, excludes utils
 		}
 		for i, f := range pending {
 			if f.AssetID == nil {
-				// The row has no asset yet; enqueue a file task.
-				queue.Push(fileTask{FileID: ids[i], Path: f.Path}, filePriority)
+				// The row has no asset yet; enqueue a checksum task.
+				queue.Push(checksumTask{FileID: ids[i], Path: f.Path}, checksumPriority)
 			} else {
 				// The moved file's content is unchanged and already has an
 				// asset, so no processing is needed.
@@ -225,7 +225,7 @@ func walkLibrary(ctx context.Context, libraryDir, dataDir string, excludes utils
 
 		if existing, ok := fileByPath[relativePath]; ok && fileStat(existing) == stat && !existing.IsOffline {
 			if existing.AssetID == nil {
-				queue.Push(fileTask{FileID: existing.ID, Path: relativePath}, filePriority)
+				queue.Push(checksumTask{FileID: existing.ID, Path: relativePath}, checksumPriority)
 			} else {
 				state.skipped.Add(1)
 				state.processed.Add(1)

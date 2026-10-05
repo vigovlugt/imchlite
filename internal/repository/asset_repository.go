@@ -66,10 +66,34 @@ func (r *Asset) ClipEmbeddingByChecksum(ctx context.Context, checksum []byte) (i
 	return id, embedding, true, nil
 }
 
-// Insert adds a new asset row with all processing steps pending. If an
-// asset with the same checksum already exists (a concurrent worker won the
-// race) the insert is a no-op. It reports whether a row was inserted.
+// Insert adds a new asset row holding only what is known before its
+// metadata is extracted (checksum, mime type, type and file times), with
+// all processing steps pending. If an asset with the same checksum already
+// exists (a concurrent worker won the race) the insert is a no-op. It
+// reports whether a row was inserted.
 func (r *Asset) Insert(ctx context.Context, a *entity.Asset) (bool, error) {
+	var mimeType any
+	if a.MimeType != "" {
+		mimeType = a.MimeType
+	}
+	res, err := r.db.ExecContext(ctx,
+		`insert into assets (checksum, mime_type, type, file_created_at, file_modified_at)
+		 values (?, ?, ?, ?, ?)
+		 on conflict (checksum) do nothing`,
+		a.Checksum, mimeType, a.Type, a.FileCreatedAt, a.FileModifiedAt)
+	if err != nil {
+		return false, fmt.Errorf("insert asset: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("insert asset: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
+// UpdateMetadata stores the asset's extracted metadata and marks its
+// metadata step ok.
+func (r *Asset) UpdateMetadata(ctx context.Context, a *entity.Asset) error {
 	var mimeType, dateTimeLocal, dateTime, timeZone, city, country any
 	if a.MimeType != "" {
 		mimeType = a.MimeType
@@ -93,23 +117,27 @@ func (r *Asset) Insert(ctx context.Context, a *entity.Asset) (bool, error) {
 	if a.Latitude != 0 || a.Longitude != 0 {
 		latitude, longitude = a.Latitude, a.Longitude
 	}
-	res, err := r.db.ExecContext(ctx,
-		`insert into assets (checksum, mime_type, type, file_created_at, file_modified_at,
-		    date_time_local, date_time, time_zone, latitude, longitude, city, country,
-		    width, height, duration_ms, orientation, metadata_status)
-		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 on conflict (checksum) do nothing`,
-		a.Checksum, mimeType, a.Type, a.FileCreatedAt, a.FileModifiedAt,
-		dateTimeLocal, dateTime, timeZone, latitude, longitude, city, country,
-		a.Width, a.Height, a.DurationMs, a.Orientation, a.MetadataStatus)
-	if err != nil {
-		return false, fmt.Errorf("insert asset: %w", err)
+	if _, err := r.db.ExecContext(ctx,
+		`update assets set mime_type = coalesce(?, mime_type), date_time_local = ?, date_time = ?,
+		    time_zone = ?, latitude = ?, longitude = ?, city = ?, country = ?,
+		    width = ?, height = ?, duration_ms = ?, orientation = ?,
+		    metadata_status = ?, updated_at = unixepoch()
+		 where id = ?`,
+		mimeType, dateTimeLocal, dateTime, timeZone, latitude, longitude, city, country,
+		a.Width, a.Height, a.DurationMs, a.Orientation, entity.TaskStatusOK, a.ID); err != nil {
+		return fmt.Errorf("update metadata for asset %d: %w", a.ID, err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("insert asset: rows affected: %w", err)
+	return nil
+}
+
+// SetMetadataStatus records the outcome of an asset's metadata step.
+func (r *Asset) SetMetadataStatus(ctx context.Context, assetID int64, status entity.TaskStatus) error {
+	if _, err := r.db.ExecContext(ctx,
+		`update assets set metadata_status = ?, updated_at = unixepoch() where id = ?`,
+		status, assetID); err != nil {
+		return fmt.Errorf("set metadata status for asset %d: %w", assetID, err)
 	}
-	return n > 0, nil
+	return nil
 }
 
 // GetAssetsWithPendingTasks returns the assets that still have a pending
@@ -123,7 +151,8 @@ func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context, includeFailed boo
 	}
 	rows, err := r.db.QueryContext(ctx,
 		`select a.id, a.checksum, a.metadata_status, a.thumbnail_status, a.clip_status from assets a
-		 where (a.thumbnail_status in (`+statuses+`) or a.clip_status in (`+statuses+`))
+		 where (a.metadata_status in (`+statuses+`) or a.thumbnail_status in (`+statuses+`)
+		        or a.clip_status in (`+statuses+`))
 		   and a.deleted_at is null and `+hasOnlineFileCond)
 	if err != nil {
 		return nil, fmt.Errorf("assets with pending tasks: %w", err)
@@ -226,6 +255,11 @@ const hasOnlineFileCond = `exists (
 	select 1 from files f where f.asset_id = a.id and f.is_offline = 0
 )`
 
+// processedCond restricts to assets whose metadata and thumbnail steps have
+// finished (ok or failed), so assets that were just inserted with only
+// their checksum are not shown yet.
+const processedCond = `a.metadata_status != 0 and a.thumbnail_status != 0`
+
 // Facets holds the filter suggestions derived from the library contents.
 type Facets struct {
 	Countries []string `json:"countries"`
@@ -238,7 +272,8 @@ type Facets struct {
 }
 
 // GetFacets returns the distinct countries, cities, top-level paths and the
-// capture-time range across all non-deleted assets that are still online.
+// capture-time range across all non-deleted, processed assets that are
+// still online.
 func (r *Asset) GetFacets(ctx context.Context) (Facets, error) {
 	var f Facets
 
@@ -247,7 +282,7 @@ func (r *Asset) GetFacets(ctx context.Context) (Facets, error) {
 		        min(coalesce(a.date_time_local, a.date_time)),
 		        max(coalesce(a.date_time_local, a.date_time))
 		 from assets a
-		 where a.deleted_at is null and `+hasOnlineFileCond,
+		 where a.deleted_at is null and `+processedCond+` and `+hasOnlineFileCond,
 	).Scan(&f.TotalCount, &f.MinTime, &f.MaxTime); err != nil {
 		return f, fmt.Errorf("asset stats: %w", err)
 	}
@@ -273,14 +308,14 @@ func (r *Asset) GetFacets(ctx context.Context) (Facets, error) {
 	if f.Countries, err = scanStrings(
 		`select distinct a.country from assets a
 		 where a.deleted_at is null and a.country is not null and a.country != ''
-		   and ` + hasOnlineFileCond + `
+		   and ` + processedCond + ` and ` + hasOnlineFileCond + `
 		 order by a.country`); err != nil {
 		return f, fmt.Errorf("countries: %w", err)
 	}
 	if f.Cities, err = scanStrings(
 		`select distinct a.city from assets a
 		 where a.deleted_at is null and a.city is not null and a.city != ''
-		   and ` + hasOnlineFileCond + `
+		   and ` + processedCond + ` and ` + hasOnlineFileCond + `
 		 order by a.city`); err != nil {
 		return f, fmt.Errorf("cities: %w", err)
 	}
@@ -340,7 +375,7 @@ func clampLimit(limit int) int {
 // optional filters in q. Cursors are left to the caller since the ordering
 // they page over is query specific.
 func assetFilterConds(q AssetQuery) ([]string, []any) {
-	conds := []string{"a.deleted_at is null", hasOnlineFileCond}
+	conds := []string{"a.deleted_at is null", processedCond, hasOnlineFileCond}
 	args := make([]any, 0, len(q.IncludePaths)+len(q.ExcludePaths)+8)
 
 	if q.Type != nil {

@@ -3,7 +3,6 @@ package tasks
 import (
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	exiftoolbin "github.com/vigovlugt/imchlite/internal/clients/exiftool"
@@ -11,81 +10,81 @@ import (
 	"github.com/vigovlugt/imchlite/internal/media"
 )
 
-// createAsset probes the file's metadata and inserts its asset row with its
-// metadata step ok and all other processing steps pending. A concurrent
-// worker may have stored the same content first; the asset is re-fetched by
-// checksum so the row with the canonical id is returned, and created reports
-// whether this call inserted it.
-func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, warm bool, timings processTimings) (asset *entity.Asset, created bool, _ processTimings, _ error) {
-	metadataStart := time.Now()
+// metadataTask extracts an asset's metadata with exiftool and its
+// sidecars. Its outcome is stored in the
+// asset's metadata status column, so a task re-enqueued at startup is
+// skipped once it finished. Path is the file the asset was just created
+// from; when empty, an online file of the asset is looked up.
+type metadataTask struct {
+	Asset entity.Asset
+	Path  string
+}
+
+// processMetadata probes the file's metadata, applies its sidecars and
+// reverse geocodes its location, stores the result with the asset's
+// metadata step ok, or failed when the file cannot be probed. A metadata
+// step interrupted by shutdown stays pending, to be retried on the next
+// startup.
+func (p *processor) processMetadata(task metadataTask, et *exiftoolbin.Exiftool) error {
+	asset, path := task.Asset, task.Path
+	if path == "" {
+		var err error
+		if path, _, err = p.assets.LiveFileForChecksum(p.ctx, asset.Checksum); err != nil {
+			return fmt.Errorf("find file for asset: %w", err)
+		}
+	}
+
+	started := time.Now()
+	absolutePath := media.ResolveLibraryPath(p.libraryDir, path)
 	var meta exiftoolbin.MediaMetadata
-	waited, err := p.readDisk(warm, "probe metadata "+task.Path, func() error {
+	waited, err := p.disk.Do(p.ctx, "probe metadata "+path, func() error {
 		var err error
 		meta, err = et.ProbeMetadata(absolutePath)
 		return err
 	})
-	timings.metadataMs = (time.Since(metadataStart) - waited).Milliseconds()
-	timings.diskWaitMs += waited.Milliseconds()
 	if err != nil {
-		return nil, false, timings, fmt.Errorf("probe metadata: %w", err)
-	}
+		if p.ctx.Err() != nil {
+			return fmt.Errorf("probe metadata for %s: %w", path, err)
+		}
+		log.Printf("probe metadata for %s: %v", path, err)
+		if err := p.assets.SetMetadataStatus(p.ctx, asset.ID, entity.TaskStatusFailed); err != nil {
+			return err
+		}
+	} else {
+		if meta.MimeType != "" {
+			asset.MimeType = meta.MimeType
+		}
+		asset.LocalDateTime = meta.LocalTakenAt
+		asset.DateTime = meta.TakenAtUTC
+		asset.TimeZone = meta.TimeZone
+		asset.Latitude = meta.Latitude
+		asset.Longitude = meta.Longitude
+		asset.City = meta.City
+		asset.Country = meta.Country
+		asset.Width = meta.Width
+		asset.Height = meta.Height
+		asset.DurationMs = meta.DurationMs
+		asset.Orientation = meta.Orientation
 
-	mimeType := meta.MimeType
-	if mimeType == "" {
-		mimeType = exiftoolbin.MimeTypeFromPath(task.Path)
-	}
+		sidecarWaited, err := p.disk.Do(p.ctx, "sidecars "+path, func() error {
+			applySidecars(p.libraryDir, path, &asset)
+			return nil
+		})
+		waited += sidecarWaited
+		if err != nil {
+			return err
+		}
 
-	mtime := info.ModTime().Unix()
-	asset = &entity.Asset{
-		Checksum:       checksum,
-		MimeType:       mimeType,
-		Type:           media.TypeFromPath(task.Path),
-		FileCreatedAt:  mtime,
-		FileModifiedAt: mtime,
-		LocalDateTime:  meta.LocalTakenAt,
-		DateTime:       meta.TakenAtUTC,
-		TimeZone:       meta.TimeZone,
-		Latitude:       meta.Latitude,
-		Longitude:      meta.Longitude,
-		City:           meta.City,
-		Country:        meta.Country,
-		Width:          meta.Width,
-		Height:         meta.Height,
-		DurationMs:     meta.DurationMs,
-		Orientation:    meta.Orientation,
-		MetadataStatus: entity.TaskStatusOK,
-	}
+		if err := applyCityCountry(&asset, et); err != nil {
+			log.Printf("apply city country for %s: %v", path, err)
+		}
 
-	// Sidecars are separate files, not warmed by reading the media file.
-	waited, err = p.disk.Do(p.ctx, "sidecars "+task.Path, func() error {
-		applySidecars(p.libraryDir, task.Path, asset)
-		return nil
-	})
-	timings.diskWaitMs += waited.Milliseconds()
-	if err != nil {
-		return nil, false, timings, err
+		if err := p.assets.UpdateMetadata(p.ctx, &asset); err != nil {
+			return err
+		}
+		log.Printf("extracted metadata asset=%d path=%s total_ms=%d disk_wait_ms=%d", asset.ID, path, time.Since(started).Milliseconds(), waited.Milliseconds())
 	}
-
-	geoStart := time.Now()
-	err = applyCityCountry(asset, et)
-	if err != nil {
-		log.Printf("apply city country for %s: %v", task.Path, err)
-	}
-	timings.geoMs = time.Since(geoStart).Milliseconds()
-
-	insertStart := time.Now()
-	created, err = p.assets.Insert(p.ctx, asset)
-	if err != nil {
-		return nil, false, timings, fmt.Errorf("store asset for %s: %w", task.Path, err)
-	}
-
-	stored, err := p.assets.GetByChecksum(p.ctx, checksum)
-	timings.dbMs += time.Since(insertStart).Milliseconds()
-	if err != nil {
-		return nil, false, timings, fmt.Errorf("lookup asset by checksum: %w", err)
-	}
-
-	return stored, created, timings, nil
+	return nil
 }
 
 func applyCityCountry(asset *entity.Asset, exiftool *exiftoolbin.Exiftool) error {

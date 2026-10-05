@@ -1,5 +1,5 @@
 // Package tasks processes the library: the queue the workers drain, and one
-// file per task type (index, file, metadata, thumbnail and clip).
+// file per task type (index, checksum, metadata, thumbnail and clip).
 package tasks
 
 import (
@@ -19,16 +19,16 @@ import (
 
 // Task priorities. Higher values are processed first; tasks of equal
 // priority keep FIFO order. Indexing runs before anything else so the
-// library walk is not competing with processing for disk I/O. Clip tasks
-// run before the next file, so a thumbnail that was just written is still
-// in the page cache. A file task that creates an asset runs its thumbnail
-// task inline, reusing the bytes it read, so thumbnail tasks are only
-// queued when recovering work from a previous run; they use the lowest
-// priority so new files are linked first.
+// library walk is not competing with processing for disk I/O. Checksums
+// run next, so every file is linked to an asset first, then metadata, and
+// only then the slower thumbnail and clip steps, although a thumbnail does
+// not need the metadata. A clip task runs before the next thumbnail, while
+// the thumbnail it embeds is still in the page cache.
 const (
-	indexPriority     = 3
-	clipPriority      = 2
-	filePriority      = 1
+	indexPriority     = 4
+	checksumPriority  = 3
+	metadataPriority  = 2
+	clipPriority      = 1
 	thumbnailPriority = 0
 )
 
@@ -92,7 +92,7 @@ func (p *processor) Worker(et *exiftoolbin.Exiftool, q *queue.Queue[any], state 
 func (p *processor) run(t any, et *exiftoolbin.Exiftool, q *queue.Queue[any], state *TaskState) {
 	if p.ctx.Err() != nil {
 		// Shutting down: drain the queue without touching disk.
-		if _, ok := t.(fileTask); ok {
+		if _, ok := t.(checksumTask); ok {
 			state.errored.Add(1)
 		}
 		return
@@ -105,15 +105,19 @@ func (p *processor) run(t any, et *exiftoolbin.Exiftool, q *queue.Queue[any], st
 			return
 		}
 		log.Printf("indexing completed")
-	case fileTask:
-		if err := p.processFile(task, et, q); err != nil {
-			log.Printf("process file=%d path=%s: %v", task.FileID, task.Path, err)
+	case checksumTask:
+		if err := p.processChecksum(task, q); err != nil {
+			log.Printf("checksum file=%d path=%s: %v", task.FileID, task.Path, err)
 			state.errored.Add(1)
 			return
 		}
 		state.processed.Add(1)
+	case metadataTask:
+		if err := p.processMetadata(task, et); err != nil {
+			log.Printf("metadata asset=%d: %v", task.Asset.ID, err)
+		}
 	case thumbnailTask:
-		if err := p.processThumbnail(task.Asset, "", nil, false, q); err != nil {
+		if err := p.processThumbnail(task.Asset, q); err != nil {
 			log.Printf("thumbnail asset=%d: %v", task.Asset.ID, err)
 		}
 	case clipTask:
@@ -147,27 +151,33 @@ func shouldRun(status entity.TaskStatus, retryFailed bool) bool {
 	return status == entity.TaskStatusPending || (retryFailed && status == entity.TaskStatusFailed)
 }
 
-// EnqueuePendingAssetTasks re-adds the thumbnail and clip tasks of assets
-// with a pending step, e.g. because the process restarted mid-task, and
-// with retryFailed also of assets with a failed step. An asset whose
-// thumbnail needs to run gets only a thumbnail task, which enqueues its
-// clip task when done. It returns the number of tasks enqueued.
-func EnqueuePendingAssetTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any], retryFailed bool) (int, error) {
+// EnqueuePendingTasks re-adds the metadata, thumbnail and clip tasks of
+// assets with a pending step, e.g. because the process restarted mid-task,
+// and with retryFailed also of assets with a failed step. The metadata and
+// thumbnail steps are independent; the clip step depends on the thumbnail,
+// so it is only enqueued here when the thumbnail needs no run, and
+// otherwise by the thumbnail task when done. It returns the number of
+// tasks enqueued.
+func EnqueuePendingTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any], retryFailed bool) (int, error) {
 	pending, err := assets.GetAssetsWithPendingTasks(ctx, retryFailed)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, a := range pending {
-		switch {
-		case shouldRun(a.ThumbnailStatus, retryFailed):
-			q.Push(thumbnailTask{Asset: a}, thumbnailPriority)
-		case shouldRun(a.ClipStatus, retryFailed):
-			q.Push(clipTask{Asset: a}, clipPriority)
-		default:
-			continue
+		if shouldRun(a.MetadataStatus, retryFailed) {
+			q.Push(metadataTask{Asset: a}, metadataPriority)
+			n++
 		}
-		n++
+		thumbnail := shouldRun(a.ThumbnailStatus, retryFailed)
+		if thumbnail {
+			q.Push(thumbnailTask{Asset: a}, thumbnailPriority)
+			n++
+		}
+		if !thumbnail && shouldRun(a.ClipStatus, retryFailed) {
+			q.Push(clipTask{Asset: a}, clipPriority)
+			n++
+		}
 	}
 	return n, nil
 }

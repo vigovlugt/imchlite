@@ -1,7 +1,6 @@
 package tasks
 
 import (
-	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -25,26 +24,20 @@ type thumbnailTask struct {
 	Asset entity.Asset
 }
 
-// processThumbnail generates the asset's webp thumbnail, stores the step's
-// outcome in the database and, if the asset's clip step needs to run,
-// enqueues its clip task on q. path and data are the file the asset was
-// just created from and its bytes when already read; with an empty path an
-// online file of the asset is looked up. warm reports that the file at path
-// was just read and is in the page cache, so reading it again does not
-// take the disk lock. A thumbnail interrupted by shutdown stays pending, to
-// be retried on the next startup.
-func (p *processor) processThumbnail(asset entity.Asset, path string, data []byte, warm bool, q *queue.Queue[any]) error {
-	if path == "" {
-		var err error
-		if path, _, err = p.assets.LiveFileForChecksum(p.ctx, asset.Checksum); err != nil {
-			return fmt.Errorf("find file for asset: %w", err)
-		}
+// processThumbnail generates the asset's webp thumbnail from one of its
+// online files, stores the step's outcome in the database and, if the
+// asset's clip step needs to run, enqueues its clip task on q. A thumbnail
+// interrupted by shutdown stays pending, to be retried on the next startup.
+func (p *processor) processThumbnail(asset entity.Asset, q *queue.Queue[any]) error {
+	path, _, err := p.assets.LiveFileForChecksum(p.ctx, asset.Checksum)
+	if err != nil {
+		return fmt.Errorf("find file for asset: %w", err)
 	}
 
 	started := time.Now()
 	absolutePath := media.ResolveLibraryPath(p.libraryDir, path)
-	waited, err := p.readDisk(warm, "thumbnail "+path, func() error {
-		return p.createThumbnail(asset.Checksum, absolutePath, data)
+	waited, err := p.disk.Do(p.ctx, "thumbnail "+path, func() error {
+		return p.createThumbnail(asset.Checksum, absolutePath)
 	})
 	if err != nil {
 		if p.ctx.Err() != nil {
@@ -68,15 +61,11 @@ func (p *processor) processThumbnail(asset entity.Asset, path string, data []byt
 	return nil
 }
 
-func (p *processor) createThumbnail(checksum []byte, absolutePath string, data []byte) error {
+func (p *processor) createThumbnail(checksum []byte, absolutePath string) error {
 	dest := thumbnailPath(p.dataDir, checksum)
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("create thumbnail dir: %w", err)
-	}
-
-	if data != nil {
-		return p.ffmpeg.ThumbnailFromReader(p.ctx, bytes.NewReader(data), dest, thumbnailSize, thumbnailQuality)
 	}
 
 	return p.ffmpeg.Thumbnail(p.ctx, absolutePath, dest, thumbnailSize, thumbnailQuality)
