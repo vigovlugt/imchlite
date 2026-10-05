@@ -54,6 +54,8 @@ type Asset struct {
 	DurationMs  int64
 	Orientation int64
 
+	// MetadataStatus records whether the file's metadata was extracted.
+	MetadataStatus TaskStatus
 	// ThumbnailStatus records whether the webp thumbnail was generated.
 	ThumbnailStatus TaskStatus
 	// ClipStatus records whether the clip embedding of the thumbnail was

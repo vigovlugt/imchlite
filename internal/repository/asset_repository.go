@@ -29,9 +29,9 @@ func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Ass
 		width, height, durationMs sql.NullInt64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`select id, mime_type, type, width, height, duration_ms, thumbnail_status, clip_status
+		`select id, mime_type, type, width, height, duration_ms, metadata_status, thumbnail_status, clip_status
 		 from assets where checksum = ?`, checksum).Scan(
-		&a.ID, &mimeType, &assetType, &width, &height, &durationMs, &a.ThumbnailStatus, &a.ClipStatus)
+		&a.ID, &mimeType, &assetType, &width, &height, &durationMs, &a.MetadataStatus, &a.ThumbnailStatus, &a.ClipStatus)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -96,12 +96,12 @@ func (r *Asset) Insert(ctx context.Context, a *entity.Asset) (bool, error) {
 	res, err := r.db.ExecContext(ctx,
 		`insert into assets (checksum, mime_type, type, file_created_at, file_modified_at,
 		    date_time_local, date_time, time_zone, latitude, longitude, city, country,
-		    width, height, duration_ms, orientation)
-		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    width, height, duration_ms, orientation, metadata_status)
+		 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 on conflict (checksum) do nothing`,
 		a.Checksum, mimeType, a.Type, a.FileCreatedAt, a.FileModifiedAt,
 		dateTimeLocal, dateTime, timeZone, latitude, longitude, city, country,
-		a.Width, a.Height, a.DurationMs, a.Orientation)
+		a.Width, a.Height, a.DurationMs, a.Orientation, a.MetadataStatus)
 	if err != nil {
 		return false, fmt.Errorf("insert asset: %w", err)
 	}
@@ -122,7 +122,7 @@ func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context, includeFailed boo
 		statuses = "0, 2"
 	}
 	rows, err := r.db.QueryContext(ctx,
-		`select a.id, a.checksum, a.thumbnail_status, a.clip_status from assets a
+		`select a.id, a.checksum, a.metadata_status, a.thumbnail_status, a.clip_status from assets a
 		 where (a.thumbnail_status in (`+statuses+`) or a.clip_status in (`+statuses+`))
 		   and a.deleted_at is null and `+hasOnlineFileCond)
 	if err != nil {
@@ -133,7 +133,7 @@ func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context, includeFailed boo
 	assets := []entity.Asset{}
 	for rows.Next() {
 		var a entity.Asset
-		if err := rows.Scan(&a.ID, &a.Checksum, &a.ThumbnailStatus, &a.ClipStatus); err != nil {
+		if err := rows.Scan(&a.ID, &a.Checksum, &a.MetadataStatus, &a.ThumbnailStatus, &a.ClipStatus); err != nil {
 			return nil, fmt.Errorf("scan asset with pending tasks: %w", err)
 		}
 		assets = append(assets, a)

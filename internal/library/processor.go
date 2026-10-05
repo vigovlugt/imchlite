@@ -409,11 +409,11 @@ func EnqueuePendingAssetTasks(ctx context.Context, assets *repository.Asset, q *
 	return len(pending), nil
 }
 
-// createAsset probes the file's metadata and inserts its asset row with all
-// processing steps pending. A concurrent worker may have stored the same
-// content first; the asset is re-fetched by checksum so the row with the
-// canonical id is returned, and created reports whether this call inserted
-// it.
+// createAsset probes the file's metadata and inserts its asset row with its
+// metadata step ok and all other processing steps pending. A concurrent
+// worker may have stored the same content first; the asset is re-fetched by
+// checksum so the row with the canonical id is returned, and created reports
+// whether this call inserted it.
 func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolutePath string, checksum []byte, info os.FileInfo, warm bool, timings processTimings) (asset *entity.Asset, created bool, _ processTimings, _ error) {
 	metadataStart := time.Now()
 	var meta exiftoolbin.MediaMetadata
@@ -451,6 +451,7 @@ func (p *processor) createAsset(task fileTask, et *exiftoolbin.Exiftool, absolut
 		Height:         meta.Height,
 		DurationMs:     meta.DurationMs,
 		Orientation:    meta.Orientation,
+		MetadataStatus: entity.TaskStatusOK,
 	}
 
 	// Sidecars are separate files, not warmed by reading the media file.

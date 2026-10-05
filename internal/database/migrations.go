@@ -17,6 +17,23 @@ var migrations = []migration{
 	{version: 1, up: migration001},
 	{version: 2, up: migration002},
 	{version: 3, up: migration003},
+	{version: 4, up: migration004},
+}
+
+// migration004 adds metadata_status with the same 0 = pending, 1 = ok,
+// 2 = failed encoding as the other status columns. Existing assets had
+// their metadata extracted before they were inserted, so they are ok.
+func migration004(tx *sql.Tx) error {
+	statements := []string{
+		`alter table assets add column metadata_status integer not null default 0`,
+		`update assets set metadata_status = 1`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("migration004: %w", err)
+		}
+	}
+	return nil
 }
 
 // migration003 gives every asset processing step a status column so the
