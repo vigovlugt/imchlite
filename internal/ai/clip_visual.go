@@ -17,8 +17,8 @@ import (
 	"golang.org/x/image/webp"
 
 	"github.com/vigovlugt/imchlite/internal/cachedir"
+	"github.com/vigovlugt/imchlite/internal/clients/hfmodel"
 	"github.com/vigovlugt/imchlite/internal/clients/onnxruntime"
-	"github.com/vigovlugt/imchlite/internal/hfmodel"
 )
 
 // The SigLIP2 models are downloaded from the immich-app Hugging Face

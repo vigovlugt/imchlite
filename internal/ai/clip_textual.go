@@ -12,8 +12,8 @@ import (
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 
 	"github.com/vigovlugt/imchlite/internal/cachedir"
+	"github.com/vigovlugt/imchlite/internal/clients/hfmodel"
 	"github.com/vigovlugt/imchlite/internal/clients/onnxruntime"
-	"github.com/vigovlugt/imchlite/internal/hfmodel"
 )
 
 const (

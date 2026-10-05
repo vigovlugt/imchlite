@@ -43,4 +43,4 @@ The textual encoder links `github.com/daulet/tokenizers` via cgo, which needs a 
 
 ## Layout
 
-Backend packages live in `internal/`. Go wrappers around external libraries and tools (exiftool, ffmpeg, onnxruntime, tokenizers, vec1) go in `internal/clients/`. `testdir/` and `testdir2/` are local sample libraries used for manual testing (gitignored).
+Backend packages live in `internal/`. Go wrappers around external libraries and tools (exiftool, ffmpeg, hfmodel, onnxruntime, tokenizers, vec1) go in `internal/clients/`. `testdir/` and `testdir2/` are local sample libraries used for manual testing (gitignored).
