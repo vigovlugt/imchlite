@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vigovlugt/imchlite/internal/ffmpeg"
+	"github.com/vigovlugt/imchlite/internal/clients/ffmpeg"
 	"github.com/vigovlugt/imchlite/internal/media"
 	"github.com/vigovlugt/imchlite/internal/repository"
 )

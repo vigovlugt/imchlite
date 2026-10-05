@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/vigovlugt/imchlite/internal/ai"
+	exiftoolbin "github.com/vigovlugt/imchlite/internal/clients/exiftool"
+	"github.com/vigovlugt/imchlite/internal/clients/ffmpeg"
 	"github.com/vigovlugt/imchlite/internal/disk"
 	"github.com/vigovlugt/imchlite/internal/entity"
-	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
-	"github.com/vigovlugt/imchlite/internal/ffmpeg"
 	"github.com/vigovlugt/imchlite/internal/media"
 	"github.com/vigovlugt/imchlite/internal/queue"
 	"github.com/vigovlugt/imchlite/internal/repository"

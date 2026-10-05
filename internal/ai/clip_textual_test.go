@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vigovlugt/imchlite/internal/onnxruntime"
+	"github.com/vigovlugt/imchlite/internal/clients/onnxruntime"
 )
 
 func TestClipTextualEmbed(t *testing.T) {

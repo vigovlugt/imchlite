@@ -6,9 +6,9 @@ import (
 	"math"
 	"testing"
 
+	"github.com/vigovlugt/imchlite/internal/clients/vec1"
 	"github.com/vigovlugt/imchlite/internal/database"
 	"github.com/vigovlugt/imchlite/internal/utils"
-	"github.com/vigovlugt/imchlite/internal/vec1"
 )
 
 func TestQuerySimilar(t *testing.T) {

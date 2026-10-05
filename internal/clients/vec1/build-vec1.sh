@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the vec1 SQLite extension binaries embedded by internal/vec1.
+# Builds the vec1 SQLite extension binaries embedded by internal/clients/vec1.
 #
 # Sources (version-0.7):
 #   https://sqlite.org/vec1/raw/vec1.c?ci=version-0.7
@@ -29,7 +29,7 @@ cc vec1scalar.o vec1avx2.o -o vec1.so -shared -fPIC -lm -lpthread
 # windows/amd64: scalar only, built with zig cc.
 zig cc -target x86_64-windows-gnu -O3 -DNDEBUG -shared -o vec1.dll vec1.c
 
-repo="$(cd "$(dirname "$0")/../.." && pwd)"
-cp vec1.so "$repo/internal/vec1/bin/linux/vec1.so"
-cp vec1.dll "$repo/internal/vec1/bin/windows/vec1.dll"
-echo "Built internal/vec1/bin/linux/vec1.so and internal/vec1/bin/windows/vec1.dll"
+repo="$(cd "$(dirname "$0")/../../.." && pwd)"
+cp vec1.so "$repo/internal/clients/vec1/bin/linux/vec1.so"
+cp vec1.dll "$repo/internal/clients/vec1/bin/windows/vec1.dll"
+echo "Built internal/clients/vec1/bin/linux/vec1.so and internal/clients/vec1/bin/windows/vec1.dll"

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
-	"github.com/vigovlugt/imchlite/internal/onnxruntime"
+	"github.com/vigovlugt/imchlite/internal/clients/onnxruntime"
 )
 
 func TestRunAddF32(t *testing.T) {

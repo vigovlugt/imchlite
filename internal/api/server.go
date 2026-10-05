@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/vigovlugt/imchlite/internal/ai"
-	"github.com/vigovlugt/imchlite/internal/ffmpeg"
+	"github.com/vigovlugt/imchlite/internal/clients/ffmpeg"
 	"github.com/vigovlugt/imchlite/internal/library"
 	"github.com/vigovlugt/imchlite/internal/repository"
 )

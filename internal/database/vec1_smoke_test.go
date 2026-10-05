@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/vigovlugt/imchlite/internal/vec1"
+	"github.com/vigovlugt/imchlite/internal/clients/vec1"
 )
 
 func float32Blob(values []float32) []byte {

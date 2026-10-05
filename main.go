@@ -14,14 +14,14 @@ import (
 
 	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/api"
+	exiftoolbin "github.com/vigovlugt/imchlite/internal/clients/exiftool"
+	"github.com/vigovlugt/imchlite/internal/clients/ffmpeg"
+	onnxruntime "github.com/vigovlugt/imchlite/internal/clients/onnxruntime"
+	"github.com/vigovlugt/imchlite/internal/clients/vec1"
 	"github.com/vigovlugt/imchlite/internal/database"
 	"github.com/vigovlugt/imchlite/internal/disk"
-	exiftoolbin "github.com/vigovlugt/imchlite/internal/exiftool"
-	"github.com/vigovlugt/imchlite/internal/ffmpeg"
 	"github.com/vigovlugt/imchlite/internal/library"
-	onnxruntime "github.com/vigovlugt/imchlite/internal/onnxruntime"
 	"github.com/vigovlugt/imchlite/internal/repository"
-	"github.com/vigovlugt/imchlite/internal/vec1"
 )
 
 func main() {

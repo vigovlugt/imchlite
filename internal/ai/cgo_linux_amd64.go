@@ -3,6 +3,6 @@
 package ai
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/../tokenizers/lib/linux_amd64
+#cgo LDFLAGS: -L${SRCDIR}/../clients/tokenizers/lib/linux_amd64
 */
 import "C"
