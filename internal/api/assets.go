@@ -4,12 +4,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"mime"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vigovlugt/imchlite/internal/ai"
 	"github.com/vigovlugt/imchlite/internal/entity"
@@ -302,9 +304,26 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 	})
 
 	mux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
 		vals := r.URL.Query()
 		contextQuery := strings.TrimSpace(vals.Get("context_query"))
 		similarTo := vals.Get("similar_to")
+
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		w = rec
+		var dbTime, embedTime time.Duration
+		count := 0
+		defer func() {
+			mode := "date"
+			switch {
+			case contextQuery != "":
+				mode = "text"
+			case similarTo != "":
+				mode = "similar"
+			}
+			log.Printf("GET /api/assets mode=%s status=%d count=%d total_ms=%.1f db_ms=%.1f embed_ms=%.1f query=%q",
+				mode, rec.status, count, ms(time.Since(started)), ms(dbTime), ms(embedTime), r.URL.RawQuery)
+		}()
 		if contextQuery != "" && similarTo != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "context_query and similar_to are mutually exclusive"})
 			return
@@ -332,7 +351,9 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "text search unavailable"})
 				return
 			}
+			embedStart := time.Now()
 			vec, err := textual.Embed(r.Context(), contextQuery)
+			embedTime = time.Since(embedStart)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
@@ -344,7 +365,9 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid similar_to checksum"})
 				return
 			}
+			dbStart := time.Now()
 			id, stored, ok, err := assets.ClipEmbeddingByChecksum(r.Context(), checksum)
+			dbTime += time.Since(dbStart)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
@@ -362,7 +385,10 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 		}
 
 		if embedding != nil {
+			dbStart := time.Now()
 			found, err := assets.QuerySimilar(r.Context(), embedding, q)
+			dbTime += time.Since(dbStart)
+			count = len(found)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
@@ -384,7 +410,10 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 			return
 		}
 
+		dbStart := time.Now()
 		found, err := assets.Query(r.Context(), q)
+		dbTime += time.Since(dbStart)
+		count = len(found)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -404,4 +433,21 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 
 		writeJSON(w, http.StatusOK, page)
 	})
+}
+
+// statusRecorder remembers the status code written through it, for request
+// logging.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// ms converts a duration to fractional milliseconds.
+func ms(d time.Duration) float64 {
+	return float64(d) / float64(time.Millisecond)
 }
