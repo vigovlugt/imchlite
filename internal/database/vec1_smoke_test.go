@@ -51,7 +51,7 @@ func TestVec1ExtensionSmoke(t *testing.T) {
 			embedding = []float32{0, 1, 0, 0}
 		}
 		if _, err := db.Exec(
-			`insert into asset_clip_embeddings (asset_id, embedding) values (?, ?)`,
+			`insert into asset_clip_embeddings_vec (rowid, embedding) values (?, ?)`,
 			i+1, float32Blob(embedding)); err != nil {
 			t.Fatalf("insert embedding: %v", err)
 		}
@@ -84,5 +84,17 @@ func TestVec1ExtensionSmoke(t *testing.T) {
 	}
 	if len(got) != 2 || got[1] != 0 || got[3] != 0 {
 		t.Fatalf("unexpected neighbors: %v", got)
+	}
+
+	// Deleting an asset removes its vector through the trigger.
+	if _, err := db.Exec(`delete from assets where id = 1`); err != nil {
+		t.Fatalf("delete asset: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`select count(*) from asset_clip_embeddings_vec`).Scan(&count); err != nil {
+		t.Fatalf("count vectors: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("got %d vectors after delete, want 2", count)
 	}
 }

@@ -53,9 +53,9 @@ func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Ass
 // has not been embedded yet; ok is false if no asset has that checksum.
 func (r *Asset) ClipEmbeddingByChecksum(ctx context.Context, checksum []byte) (id int64, embedding []byte, ok bool, err error) {
 	err = r.db.QueryRowContext(ctx,
-		`select a.id, e.embedding
+		`select a.id, v.embedding
 		 from assets a
-		 left join asset_clip_embeddings e on e.asset_id = a.id
+		 left join asset_clip_embeddings_vec v on v.rowid = a.id
 		 where a.checksum = ? and a.deleted_at is null`, checksum).Scan(&id, &embedding)
 	if err == sql.ErrNoRows {
 		return 0, nil, false, nil
@@ -201,8 +201,10 @@ func (r *Asset) InsertClipEmbedding(ctx context.Context, assetID int64, embeddin
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx,
-		`insert into asset_clip_embeddings (asset_id, embedding) values (?, ?)
-		 on conflict (asset_id) do nothing`, assetID, embedding); err != nil {
+		`insert into asset_clip_embeddings_vec (rowid, embedding)
+		 select ?1, ?2 where not exists (
+		     select 1 from asset_clip_embeddings_vec where rowid = ?1
+		 )`, assetID, embedding); err != nil {
 		return fmt.Errorf("insert clip embedding for asset %d: %w", assetID, err)
 	}
 	if _, err := tx.ExecContext(ctx,

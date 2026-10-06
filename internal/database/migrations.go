@@ -18,6 +18,32 @@ var migrations = []migration{
 	{version: 2, up: migration002},
 	{version: 3, up: migration003},
 	{version: 4, up: migration004},
+	{version: 5, up: migration005},
+}
+
+// migration005 makes asset_clip_embeddings_vec the only copy of the clip
+// embeddings. vec1 stores the full vectors itself and returns them unchanged,
+// so the plain asset_clip_embeddings table only duplicated them. The vec1
+// rowid is the asset id. Virtual tables cannot be referenced by foreign keys,
+// so a trigger on assets replaces the cascade. vec1 has no xRename, so the
+// virtual table keeps its _vec name.
+func migration005(tx *sql.Tx) error {
+	statements := []string{
+		`drop trigger if exists asset_clip_embeddings_vec_ai`,
+		`drop trigger if exists asset_clip_embeddings_vec_ad`,
+		`drop table asset_clip_embeddings`,
+		`create trigger if not exists assets_clip_embedding_ad
+		    after delete on assets
+		begin
+		    delete from asset_clip_embeddings_vec where rowid = old.id;
+		end`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("migration005: %w", err)
+		}
+	}
+	return nil
 }
 
 // migration004 adds metadata_status with the same 0 = pending, 1 = ok,
@@ -59,7 +85,9 @@ func migration003(tx *sql.Tx) error {
 
 // migration002 adds the clip embedding pipeline. asset_clip_embeddings
 // holds one embedding per asset; an asset without a row there has its
-// clip task pending, so the table doubles as the durable task marker.
+// clip task pending, so the table doubles as the durable task marker
+// (replaced by clip_status in migration003; the table itself is dropped in
+// migration005).
 //
 // It also creates asset_clip_embeddings_vec, the vec1 vector index over the
 // embeddings. The virtual table mirrors asset_clip_embeddings: the vec1
