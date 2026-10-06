@@ -52,7 +52,7 @@ type ClipVisual struct {
 
 	// session is set by the load goroutine before ready is closed; read it
 	// only after receiving from ready.
-	session *ort.Session
+	session *onnxruntime.Session
 	// ready is closed once the model load finished; if loadErr is non-nil
 	// the load failed and Embed returns it.
 	ready   chan struct{}
@@ -125,7 +125,10 @@ func (c *ClipVisual) Close() error {
 type EmbedTimings struct {
 	DecodeMs    int64
 	TransformMs int64
-	InferenceMs int64
+	// InferenceWaitMs is the time spent waiting for other inference to
+	// finish, as sessions run one at a time; InferenceMs excludes it.
+	InferenceWaitMs int64
+	InferenceMs     int64
 }
 
 // Embed returns the embedding for the webp thumbnail read from r, along
@@ -154,7 +157,7 @@ func (c *ClipVisual) Embed(ctx context.Context, r io.Reader) ([]float32, EmbedTi
 	timings.TransformMs = time.Since(transformStart).Milliseconds()
 
 	inferenceStart := time.Now()
-	outputs, err := c.session.Run(ctx, map[string]*ort.Tensor{visualInputName: input}, []string{visualOutputName})
+	outputs, wait, err := c.session.Run(ctx, map[string]*ort.Tensor{visualInputName: input}, []string{visualOutputName})
 	if err != nil {
 		return nil, timings, err
 	}
@@ -163,7 +166,8 @@ func (c *ClipVisual) Embed(ctx context.Context, r io.Reader) ([]float32, EmbedTi
 			_ = t.Close()
 		}
 	}()
-	timings.InferenceMs = time.Since(inferenceStart).Milliseconds()
+	timings.InferenceWaitMs = wait.Milliseconds()
+	timings.InferenceMs = (time.Since(inferenceStart) - wait).Milliseconds()
 
 	data, err := ort.TensorData[float32](outputs[visualOutputName])
 	if err != nil {

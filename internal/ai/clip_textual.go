@@ -36,7 +36,7 @@ type ClipTextual struct {
 
 	// session and tokenizer are set by the load goroutine before ready is
 	// closed; read them only after receiving from ready.
-	session   *ort.Session
+	session   *onnxruntime.Session
 	tokenizer *tokenizers.Tokenizer
 	// ready is closed once the model load finished; if loadErr is non-nil
 	// the load failed and Embed returns it.
@@ -151,7 +151,7 @@ func (c *ClipTextual) Embed(ctx context.Context, text string) ([]float32, error)
 	}
 	defer input.Close()
 
-	outputs, err := c.session.Run(ctx, map[string]*ort.Tensor{textualInputName: input}, []string{textualOutputName})
+	outputs, _, err := c.session.Run(ctx, map[string]*ort.Tensor{textualInputName: input}, []string{textualOutputName})
 	if err != nil {
 		return nil, err
 	}

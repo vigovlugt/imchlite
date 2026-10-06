@@ -8,6 +8,7 @@
 package onnxruntime
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log"
@@ -79,30 +80,80 @@ func Setup() error {
 	return nil
 }
 
+// mu serializes all session use. WebGPU sessions share one device context,
+// which crashes when two sessions use it at the same time, whether creating,
+// running or closing them. CPU sessions take it too, for simplicity.
+//
+// TODO: microsoft/onnxruntime#32587 makes separate WebGPU sessions safe to
+// use concurrently. It was merged after WebGPU plugin 0.4.0 and needs ONNX
+// Runtime >= 1.30.1. Once a plugin release includes it, bump the embedded
+// runtime and plugin (and cacheName), then replace this global lock with a
+// per-session one: the PR does not cover parallel Run calls on a single
+// session, and every clip worker shares one. Test the change carefully:
+// concurrent use without the fix faulted the GPU (Xid 31/32/79) and once
+// needed a reboot.
+var mu sync.Mutex
+
+// Session is an inference session created by NewSession. It only exposes
+// methods that hold mu.
+type Session struct {
+	session *ort.Session
+}
+
 // NewSession creates an inference session for the model at path on the GPU
 // through WebGPU, falling back to the CPU if there is no GPU or the session
 // cannot be created on it, for example because no Vulkan driver is installed.
 // Setup must have succeeded first.
-func NewSession(path string) (*ort.Session, error) {
-	if webGPUDevice == nil {
-		return ort.NewSession(path, nil)
-	}
+func NewSession(path string) (*Session, error) {
+	mu.Lock()
+	defer mu.Unlock()
 
+	session, err := newWebGPUSession(path)
+	if err != nil {
+		log.Printf("warn: create webgpu session for %s, falling back to cpu: %v", filepath.Base(path), err)
+	}
+	if session == nil {
+		if session, err = ort.NewSession(path, nil); err != nil {
+			return nil, err
+		}
+	}
+	return &Session{session: session}, nil
+}
+
+// newWebGPUSession creates a session on the WebGPU device. It returns a nil
+// session and no error if there is no WebGPU device.
+func newWebGPUSession(path string) (*ort.Session, error) {
+	if webGPUDevice == nil {
+		return nil, nil
+	}
 	opts, err := ort.NewSessionOptions()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = opts.Close() }()
 	if err := appendDevice(opts, webGPUDevice); err != nil {
-		log.Printf("warn: use webgpu for %s, falling back to cpu: %v", filepath.Base(path), err)
-		return ort.NewSession(path, nil)
+		return nil, err
 	}
-	session, err := ort.NewSession(path, opts)
-	if err != nil {
-		log.Printf("warn: create webgpu session for %s, falling back to cpu: %v", filepath.Base(path), err)
-		return ort.NewSession(path, nil)
-	}
-	return session, nil
+	return ort.NewSession(path, opts)
+}
+
+// Run runs the session, as ort.Session.Run does, and also returns how long
+// it waited for other sessions' use to finish first. The outputs are in CPU
+// memory, so reading and closing them needs no lock.
+func (s *Session) Run(ctx context.Context, inputs map[string]*ort.Tensor, outputNames []string) (map[string]*ort.Tensor, time.Duration, error) {
+	start := time.Now()
+	mu.Lock()
+	defer mu.Unlock()
+	wait := time.Since(start)
+	outputs, err := s.session.Run(ctx, inputs, outputNames)
+	return outputs, wait, err
+}
+
+// Close releases the session.
+func (s *Session) Close() error {
+	mu.Lock()
+	defer mu.Unlock()
+	return s.session.Close()
 }
 
 // Runtime is an ONNX Runtime initialized in the background by Load.

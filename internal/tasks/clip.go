@@ -62,11 +62,11 @@ func (p *processor) processClip(asset entity.Asset) error {
 	}
 
 	log.Printf(
-		"clipped asset=%d dim=%d total_ms=%d disk_wait_ms=%d decode_ms=%d transform_ms=%d inference_ms=%d",
+		"clipped asset=%d dim=%d total_ms=%d disk_wait_ms=%d decode_ms=%d transform_ms=%d inference_wait_ms=%d inference_ms=%d",
 		asset.ID, len(embedding),
 		time.Since(started).Milliseconds(),
 		waited.Milliseconds(),
-		timings.DecodeMs, timings.TransformMs, timings.InferenceMs,
+		timings.DecodeMs, timings.TransformMs, timings.InferenceWaitMs, timings.InferenceMs,
 	)
 	return nil
 }
