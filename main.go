@@ -183,15 +183,25 @@ func main() {
 		}
 	}
 
+	// Every task is pushed by the initial index task or by a task in flight,
+	// so an idle queue means all work is done.
 	if *indexOnly {
-		// Every task is pushed by the initial index task or by a task
-		// in flight, so an idle queue means all work is done.
 		select {
 		case <-queue.Idle():
-			log.Printf("all tasks finished, exiting")
+			logProcessingCompleted(state)
+			log.Printf("exiting")
 		case <-ctx.Done():
 		}
 	} else {
+		if !*serveOnly {
+			go func() {
+				select {
+				case <-queue.Idle():
+					logProcessingCompleted(state)
+				case <-ctx.Done():
+				}
+			}()
+		}
 		srv := api.NewServer(*addr, state, assetRepo, libraryDir, dataDir, textual, f, frontendHandler())
 		if err := api.RunServer(ctx, srv, !*noBrowser); err != nil {
 			log.Printf("serve: %v", err)
@@ -211,4 +221,12 @@ func main() {
 	if *indexOnly && state.Status().Failed {
 		exitCode = 1
 	}
+}
+
+// logProcessingCompleted logs that all tasks have finished, with the run's
+// counts.
+func logProcessingCompleted(state *tasks.TaskState) {
+	status := state.Status()
+	log.Printf("completed processing in %s: %d discovered, %d processed, %d errored",
+		time.Since(status.StartedAt).Round(time.Millisecond), status.Discovered, status.Processed, status.Errored)
 }
