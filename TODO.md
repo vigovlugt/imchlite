@@ -1,4 +1,5 @@
 - Move exiftool to asset task
+- Make task groups, for same asset do checksum, metadata, thumbnail.
 - Task status redo
 - Frontend time
 - OCR

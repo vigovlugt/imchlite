@@ -2,9 +2,15 @@
 
 package onnxruntime
 
-import _ "embed"
+import "embed"
 
-//go:embed bin/windows/onnxruntime.dll
-var libraryBytes []byte
+// The WebGPU plugin loads dxcompiler.dll and dxil.dll from its own directory.
+//
+//go:embed bin/windows
+var binFS embed.FS
 
-const libraryFilename = "onnxruntime.dll"
+const (
+	binDir          = "bin/windows"
+	libraryFilename = "onnxruntime.dll"
+	webGPUFilename  = "onnxruntime_providers_webgpu.dll"
+)

@@ -1,30 +1,60 @@
 // Package onnxruntime manages the embedded ONNX Runtime shared library. Like
 // the ffmpeg package, the library is embedded in the binary and extracted to
 // the user cache directory on first use, where it persists between runs.
+//
+// Next to the CPU build of the runtime, the WebGPU plugin execution provider
+// is embedded. Sessions run on the GPU through it (Vulkan on Linux, Direct3D
+// 12 on Windows) when a GPU adapter is available, and on the CPU otherwise.
 package onnxruntime
 
 import (
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 	"github.com/vigovlugt/imchlite/internal/cachedir"
 )
 
-// Setup initializes the ONNX Runtime, extracting the embedded shared library to
-// the user cache directory on first use and loading it from there. The
+// cacheName is the cache directory the libraries are extracted to. It names
+// the build so a cache populated by an earlier build is not reused.
+const cacheName = "onnxruntime-1.30.0-webgpu-0.4.0"
+
+const webGPUEpName = "WebGpuExecutionProvider"
+
+// webGPUDevice is the device sessions run on through the WebGPU execution
+// provider, or nil if there is none. It is set by Setup, once.
+var (
+	webGPUDevice *gpuDevice
+	webGPUOnce   sync.Once
+)
+
+// Setup initializes the ONNX Runtime, extracting the embedded shared libraries
+// to the user cache directory on first use and loading them from there. The
 // directory persists between runs.
 func Setup() error {
-	if len(libraryBytes) == 0 {
+	entries, _ := binFS.ReadDir(binDir)
+	if len(entries) == 0 {
 		return fmt.Errorf("no embedded onnxruntime library for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	dir, err := cachedir.Ensure("onnxruntime", func(dir string) error {
-		return os.WriteFile(filepath.Join(dir, libraryFilename), libraryBytes, 0o755)
+	dir, err := cachedir.Ensure(cacheName, func(dir string) error {
+		for _, entry := range entries {
+			data, err := fs.ReadFile(binFS, path.Join(binDir, entry.Name()))
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0o755); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -35,7 +65,44 @@ func Setup() error {
 		return fmt.Errorf("init onnxruntime: %w", err)
 	}
 
+	// A plugin library can only be registered once per process, while Setup
+	// may run several times.
+	webGPUOnce.Do(func() {
+		webGPUDevice, err = registerWebGPU(filepath.Join(dir, libraryFilename), filepath.Join(dir, webGPUFilename))
+		if err != nil {
+			log.Printf("info: webgpu unavailable, onnxruntime runs on cpu: %v", err)
+		} else {
+			log.Printf("info: found webgpu gpu (vendor %#04x, device %#04x)", webGPUDevice.vendorID, webGPUDevice.deviceID)
+		}
+	})
+
 	return nil
+}
+
+// NewSession creates an inference session for the model at path on the GPU
+// through WebGPU, falling back to the CPU if there is no GPU or the session
+// cannot be created on it, for example because no Vulkan driver is installed.
+// Setup must have succeeded first.
+func NewSession(path string) (*ort.Session, error) {
+	if webGPUDevice == nil {
+		return ort.NewSession(path, nil)
+	}
+
+	opts, err := ort.NewSessionOptions()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = opts.Close() }()
+	if err := appendDevice(opts, webGPUDevice); err != nil {
+		log.Printf("warn: use webgpu for %s, falling back to cpu: %v", filepath.Base(path), err)
+		return ort.NewSession(path, nil)
+	}
+	session, err := ort.NewSession(path, opts)
+	if err != nil {
+		log.Printf("warn: create webgpu session for %s, falling back to cpu: %v", filepath.Base(path), err)
+		return ort.NewSession(path, nil)
+	}
+	return session, nil
 }
 
 // Runtime is an ONNX Runtime initialized in the background by Load.
@@ -69,7 +136,15 @@ func (r *Runtime) Wait() error {
 	return r.err
 }
 
-// Shutdown releases the ONNX Runtime environment.
+// Shutdown releases the ONNX Runtime environment. Every session must be
+// closed first.
 func Shutdown() error {
-	return ort.Shutdown()
+	if err := ort.Shutdown(); err != nil {
+		return err
+	}
+	if webGPUDevice != nil {
+		webGPUDevice = nil
+		return unregisterWebGPU()
+	}
+	return nil
 }

@@ -19,7 +19,7 @@ go build .
 - Frontend routes: TanStack Router file-based routes in `frontend/src/routes/`; `routeTree.gen.ts` is generated (by the Vite plugin on dev/build, or `bun run generate-routes`) — never edit it by hand.
 - Run app: `go run . --library-dir <dir> [--data-dir <dir>]` — listens on `127.0.0.1:3000` and opens a browser. The SQLite db + thumbnails go in the data dir, which defaults to `<library-dir>/.imchlite/`.
 - Index without serving: `go run . --library-dir <dir> --index-only` — indexes and processes all assets, then exits once the task queue is idle (no server, no browser; exits 1 if the library walk failed). `--serve-only` is the opposite: serve without indexing.
-- Tests: `go test ./...` (`internal/clients/ffmpeg/` and `ai/` have tests; `ai/` needs onnxruntime, see below).
+- Tests: `go test ./...` (`internal/clients/ffmpeg/`, `internal/clients/onnxruntime/` and `ai/` have tests; the latter two need onnxruntime, see below).
 
 ## NixOS
 
@@ -28,6 +28,8 @@ On NixOS the onnxruntime shared library fails to load under a plain shell (`libs
 ```
 steam-run go test ./...
 ```
+
+The embedded onnxruntime is the CPU build plus the WebGPU plugin execution provider (`onnxruntime-ep-webgpu` from PyPI), so inference runs on the GPU through Vulkan (Linux) or Direct3D 12 (Windows), falling back to CPU when no adapter is found (logged as `falling back to cpu`). The Go binding has no plugin API, so `internal/clients/onnxruntime/plugin.go` calls the C API itself (headers vendored in `include/`) and reads the binding's unexported session options handle through `unsafe`; the layout is checked at runtime and by `TestSessionOptionsHandle`, so run that test after bumping `github.com/microsoft/onnxruntime/go`. `steam-run` provides a Vulkan loader; under a plain NixOS shell add `vulkan-loader`'s lib dir and `/run/opengl-driver/lib` to `LD_LIBRARY_PATH`.
 
 ## Embedded binaries
 

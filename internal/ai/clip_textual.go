@@ -92,7 +92,7 @@ func NewClipTextual(dir string, rt *onnxruntime.Runtime) (*ClipTextual, error) {
 			return
 		}
 
-		session, err := ort.NewSession(path, nil)
+		session, err := onnxruntime.NewSession(path)
 		if err != nil {
 			tokenizer.Close()
 			c.loadErr = fmt.Errorf("load textual model: %w", err)

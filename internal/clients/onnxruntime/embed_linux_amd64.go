@@ -2,9 +2,13 @@
 
 package onnxruntime
 
-import _ "embed"
+import "embed"
 
-//go:embed bin/linux/libonnxruntime.so
-var libraryBytes []byte
+//go:embed bin/linux
+var binFS embed.FS
 
-const libraryFilename = "libonnxruntime.so"
+const (
+	binDir          = "bin/linux"
+	libraryFilename = "libonnxruntime.so"
+	webGPUFilename  = "libonnxruntime_providers_webgpu.so"
+)

@@ -88,7 +88,7 @@ func NewClipVisual(dir string, rt *onnxruntime.Runtime) (*ClipVisual, error) {
 		}
 
 		start := time.Now()
-		session, err := ort.NewSession(path, nil)
+		session, err := onnxruntime.NewSession(path)
 		if err != nil {
 			c.loadErr = fmt.Errorf("load visual model: %w", err)
 			return

@@ -2,6 +2,12 @@
 
 package onnxruntime
 
-var libraryBytes []byte
+import "embed"
 
-const libraryFilename = "libonnxruntime.so"
+var binFS embed.FS
+
+const (
+	binDir          = ""
+	libraryFilename = "libonnxruntime.so"
+	webGPUFilename  = "libonnxruntime_providers_webgpu.so"
+)

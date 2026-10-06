@@ -8,3 +8,7 @@ internal/clients/onnxruntime/bin/linux/libonnxruntime.so filter=lfs diff=lfs mer
 internal/clients/onnxruntime/bin/windows/onnxruntime.dll filter=lfs diff=lfs merge=lfs -text
 internal/clients/tokenizers/lib/linux_amd64/libtokenizers.a filter=lfs diff=lfs merge=lfs -text
 internal/clients/tokenizers/lib/windows_amd64/libtokenizers.a filter=lfs diff=lfs merge=lfs -text
+internal/clients/onnxruntime/bin/linux/libonnxruntime_providers_webgpu.so filter=lfs diff=lfs merge=lfs -text
+internal/clients/onnxruntime/bin/windows/onnxruntime_providers_webgpu.dll filter=lfs diff=lfs merge=lfs -text
+internal/clients/onnxruntime/bin/windows/dxcompiler.dll filter=lfs diff=lfs merge=lfs -text
+internal/clients/onnxruntime/bin/windows/dxil.dll filter=lfs diff=lfs merge=lfs -text
