@@ -149,17 +149,53 @@ func (c *ClipVisual) Embed(ctx context.Context, r io.Reader) ([]float32, EmbedTi
 	timings.DecodeMs = time.Since(decodeStart).Milliseconds()
 
 	transformStart := time.Now()
-	input, err := ort.CreateTensor[float32]([]int64{1, 3, imageSize, imageSize}, preprocess(img))
-	if err != nil {
+	data := preprocess(img)
+	timings.TransformMs = time.Since(transformStart).Milliseconds()
+
+	embedding, err := c.embedTensor(ctx, data, &timings)
+	return embedding, timings, err
+}
+
+// EmbedRGB returns the embedding for a raw 224x224 RGB24 frame (row-major,
+// 3 bytes per pixel), skipping image decoding and resizing. It blocks until
+// the background model load finished.
+func (c *ClipVisual) EmbedRGB(ctx context.Context, rgb []byte) ([]float32, EmbedTimings, error) {
+	var timings EmbedTimings
+
+	if err := c.WaitLoad(ctx); err != nil {
 		return nil, timings, err
 	}
-	defer input.Close()
+	if len(rgb) != 3*imageSize*imageSize {
+		return nil, timings, fmt.Errorf("rgb frame is %d bytes, want %d", len(rgb), 3*imageSize*imageSize)
+	}
+
+	transformStart := time.Now()
+	plane := imageSize * imageSize
+	data := make([]float32, 3*plane)
+	for i := range plane {
+		data[i] = float32(rgb[3*i])/127.5 - 1
+		data[plane+i] = float32(rgb[3*i+1])/127.5 - 1
+		data[2*plane+i] = float32(rgb[3*i+2])/127.5 - 1
+	}
 	timings.TransformMs = time.Since(transformStart).Milliseconds()
+
+	embedding, err := c.embedTensor(ctx, data, &timings)
+	return embedding, timings, err
+}
+
+// embedTensor runs the model on a normalized NCHW float32 tensor and fills in
+// the inference timings.
+func (c *ClipVisual) embedTensor(ctx context.Context, data []float32, timings *EmbedTimings) ([]float32, error) {
+	input, err := ort.CreateTensor[float32]([]int64{1, 3, imageSize, imageSize}, data)
+	if err != nil {
+		return nil, err
+	}
+	defer input.Close()
 
 	inferenceStart := time.Now()
 	outputs, wait, err := c.session.Run(ctx, map[string]*ort.Tensor{visualInputName: input}, []string{visualOutputName})
 	if err != nil {
-		return nil, timings, err
+		return nil, err
 	}
 	defer func() {
 		for _, t := range outputs {
@@ -169,11 +205,11 @@ func (c *ClipVisual) Embed(ctx context.Context, r io.Reader) ([]float32, EmbedTi
 	timings.InferenceWaitMs = wait.Milliseconds()
 	timings.InferenceMs = (time.Since(inferenceStart) - wait).Milliseconds()
 
-	data, err := ort.TensorData[float32](outputs[visualOutputName])
+	out, err := ort.TensorData[float32](outputs[visualOutputName])
 	if err != nil {
-		return nil, timings, err
+		return nil, err
 	}
-	return append([]float32(nil), data...), timings, nil
+	return append([]float32(nil), out...), nil
 }
 
 // preprocess squashes img to 224x224 (without preserving aspect ratio) using

@@ -6,7 +6,10 @@ import { routeTree } from './routeTree.gen'
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 60_000,
+      // Cached data never goes stale, so it is not refetched on mount,
+      // window focus or reconnect; only invalidation or refetchInterval
+      // fetch it again.
+      staleTime: Infinity,
       retry: 1,
     },
   },

@@ -21,6 +21,8 @@ export interface Asset {
   isFavorite: boolean
   /** relative paths of the asset's online files */
   paths?: string[]
+  /** cosine similarity to the query, set only for text and similar queries */
+  similarity?: number
 }
 
 export interface AssetPage {

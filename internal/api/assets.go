@@ -42,6 +42,9 @@ type assetResponse struct {
 	IsFavorite  bool     `json:"isFavorite"`
 	// Paths are the relative paths of the asset's online files.
 	Paths []string `json:"paths,omitempty"`
+	// Similarity is the cosine similarity to the query embedding, set only
+	// for context_query and similar_to queries.
+	Similarity *float64 `json:"similarity,omitempty"`
 }
 
 // assetPage is a page of assets plus the cursor to fetch the next one.
@@ -395,7 +398,10 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 			}
 			page := assetPage{Assets: make([]assetResponse, 0, len(found))}
 			for _, a := range found {
-				page.Assets = append(page.Assets, newAssetResponse(a.Asset))
+				resp := newAssetResponse(a.Asset)
+				similarity := 1 - a.Distance
+				resp.Similarity = &similarity
+				page.Assets = append(page.Assets, resp)
 			}
 			// A full page may have more neighbors; hand back a cursor
 			// positioned on the last one.
