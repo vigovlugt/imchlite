@@ -29,9 +29,9 @@ func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Ass
 		width, height, durationMs sql.NullInt64
 	)
 	err := r.db.QueryRowContext(ctx,
-		`select id, mime_type, type, width, height, duration_ms, metadata_status, thumbnail_status, clip_status
+		`select id, mime_type, type, width, height, duration_ms, metadata_status, thumbnail_status, clip_status, ocr_status
 		 from assets where checksum = ?`, checksum).Scan(
-		&a.ID, &mimeType, &assetType, &width, &height, &durationMs, &a.MetadataStatus, &a.ThumbnailStatus, &a.ClipStatus)
+		&a.ID, &mimeType, &assetType, &width, &height, &durationMs, &a.MetadataStatus, &a.ThumbnailStatus, &a.ClipStatus, &a.OCRStatus)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -150,9 +150,9 @@ func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context, includeFailed boo
 		statuses = "0, 2"
 	}
 	rows, err := r.db.QueryContext(ctx,
-		`select a.id, a.checksum, a.metadata_status, a.thumbnail_status, a.clip_status from assets a
+		`select a.id, a.checksum, a.type, a.metadata_status, a.thumbnail_status, a.clip_status, a.ocr_status from assets a
 		 where (a.metadata_status in (`+statuses+`) or a.thumbnail_status in (`+statuses+`)
-		        or a.clip_status in (`+statuses+`))
+		        or a.clip_status in (`+statuses+`) or a.ocr_status in (`+statuses+`))
 		   and a.deleted_at is null and `+hasOnlineFileCond)
 	if err != nil {
 		return nil, fmt.Errorf("assets with pending tasks: %w", err)
@@ -162,7 +162,7 @@ func (r *Asset) GetAssetsWithPendingTasks(ctx context.Context, includeFailed boo
 	assets := []entity.Asset{}
 	for rows.Next() {
 		var a entity.Asset
-		if err := rows.Scan(&a.ID, &a.Checksum, &a.MetadataStatus, &a.ThumbnailStatus, &a.ClipStatus); err != nil {
+		if err := rows.Scan(&a.ID, &a.Checksum, &a.Type, &a.MetadataStatus, &a.ThumbnailStatus, &a.ClipStatus, &a.OCRStatus); err != nil {
 			return nil, fmt.Errorf("scan asset with pending tasks: %w", err)
 		}
 		assets = append(assets, a)
@@ -214,6 +214,50 @@ func (r *Asset) InsertClipEmbedding(ctx context.Context, assetID int64, embeddin
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("insert clip embedding for asset %d: commit: %w", assetID, err)
+	}
+	return nil
+}
+
+// SetOCRStatus records the outcome of an asset's ocr step.
+func (r *Asset) SetOCRStatus(ctx context.Context, assetID int64, status entity.TaskStatus) error {
+	if _, err := r.db.ExecContext(ctx,
+		`update assets set ocr_status = ?, updated_at = unixepoch() where id = ?`,
+		status, assetID); err != nil {
+		return fmt.Errorf("set ocr status for asset %d: %w", assetID, err)
+	}
+	return nil
+}
+
+// ReplaceOCRLines stores the text lines read from an asset, in reading
+// order, replacing any it had, and marks its ocr step ok.
+func (r *Asset) ReplaceOCRLines(ctx context.Context, assetID int64, lines []entity.OCRLine) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("replace ocr lines for asset %d: begin: %w", assetID, err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `delete from asset_ocr where asset_id = ?`, assetID); err != nil {
+		return fmt.Errorf("replace ocr lines for asset %d: delete: %w", assetID, err)
+	}
+	for i, l := range lines {
+		if _, err := tx.ExecContext(ctx,
+			`insert into asset_ocr (asset_id, line, x1, y1, x2, y2, x3, y3, x4, y4, box_score, text_score, text)
+			 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			assetID, i,
+			l.Box[0].X, l.Box[0].Y, l.Box[1].X, l.Box[1].Y,
+			l.Box[2].X, l.Box[2].Y, l.Box[3].X, l.Box[3].Y,
+			l.BoxScore, l.TextScore, l.Text); err != nil {
+			return fmt.Errorf("replace ocr lines for asset %d: insert: %w", assetID, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`update assets set ocr_status = ?, updated_at = unixepoch() where id = ?`,
+		entity.TaskStatusOK, assetID); err != nil {
+		return fmt.Errorf("set ocr status for asset %d: %w", assetID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("replace ocr lines for asset %d: commit: %w", assetID, err)
 	}
 	return nil
 }

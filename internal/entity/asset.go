@@ -61,6 +61,8 @@ type Asset struct {
 	// ClipStatus records whether the clip embedding of the thumbnail was
 	// stored.
 	ClipStatus TaskStatus
+	// OCRStatus records whether the text in the asset was read.
+	OCRStatus TaskStatus
 
 	// Thumbhash []byte
 

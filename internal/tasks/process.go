@@ -1,5 +1,5 @@
 // Package tasks processes the library: the queue the workers drain, and one
-// file per task type (index, checksum, metadata, thumbnail and clip).
+// file per task type (index, checksum, metadata, thumbnail, clip and ocr).
 package tasks
 
 import (
@@ -21,14 +21,16 @@ import (
 // library walk is not competing with processing for disk I/O. Checksums
 // run next, so every file is linked to an asset first, then metadata, then
 // thumbnails, although a thumbnail does not need the metadata. Clip tasks
-// run last, so every asset is shown with its thumbnail before the clip
-// embeddings are computed.
+// run next, so every asset is shown with its thumbnail before the clip
+// embeddings are computed. Ocr tasks run last, as they are the slowest
+// and their text is only needed for search.
 const (
-	indexPriority     = 4
-	checksumPriority  = 3
-	metadataPriority  = 2
-	thumbnailPriority = 1
-	clipPriority      = 0
+	indexPriority     = 5
+	checksumPriority  = 4
+	metadataPriority  = 3
+	thumbnailPriority = 2
+	clipPriority      = 1
+	ocrPriority       = 0
 )
 
 // NewQueue creates the queue the indexer and processor feed and the workers
@@ -123,6 +125,10 @@ func (p *processor) run(t any, et *exiftoolbin.Exiftool, q *queue.Queue[any], st
 		if err := p.processClip(task.Asset); err != nil {
 			log.Printf("clip asset=%d: %v", task.Asset.ID, err)
 		}
+	case ocrTask:
+		if err := p.processOCR(task.Asset); err != nil {
+			log.Printf("ocr asset=%d: %v", task.Asset.ID, err)
+		}
 	default:
 		log.Printf("unknown task type %T", t)
 	}
@@ -139,12 +145,12 @@ func shouldRun(status entity.TaskStatus, retryFailed bool) bool {
 	return status == entity.TaskStatusPending || (retryFailed && status == entity.TaskStatusFailed)
 }
 
-// EnqueuePendingTasks re-adds the metadata, thumbnail and clip tasks of
-// assets with a pending step, e.g. because the process restarted mid-task,
-// and with retryFailed also of assets with a failed step. The metadata and
-// thumbnail steps are independent; the clip step depends on the thumbnail,
-// so it is only enqueued here when the thumbnail needs no run, and
-// otherwise by the thumbnail task when done. It returns the number of
+// EnqueuePendingTasks re-adds the metadata, thumbnail, clip and ocr tasks
+// of assets with a pending step, e.g. because the process restarted
+// mid-task, and with retryFailed also of assets with a failed step. The
+// metadata, thumbnail and ocr steps are independent; the clip step depends
+// on the thumbnail, so it is only enqueued here when the thumbnail needs no
+// run, and otherwise by the thumbnail task when done. It returns the number of
 // tasks enqueued.
 func EnqueuePendingTasks(ctx context.Context, assets *repository.Asset, q *queue.Queue[any], retryFailed bool) (int, error) {
 	pending, err := assets.GetAssetsWithPendingTasks(ctx, retryFailed)
@@ -164,6 +170,10 @@ func EnqueuePendingTasks(ctx context.Context, assets *repository.Asset, q *queue
 		}
 		if !thumbnail && shouldRun(a.ClipStatus, retryFailed) {
 			q.Push(clipTask{Asset: a}, clipPriority)
+			n++
+		}
+		if shouldRun(a.OCRStatus, retryFailed) {
+			q.Push(ocrTask{Asset: a}, ocrPriority)
 			n++
 		}
 	}

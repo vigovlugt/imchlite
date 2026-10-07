@@ -94,6 +94,7 @@ func (p *processor) processChecksum(task checksumTask, q *queue.Queue[any]) erro
 	if created {
 		q.Push(metadataTask{Asset: *asset, Path: task.Path}, metadataPriority)
 		q.Push(thumbnailTask{Asset: *asset}, thumbnailPriority)
+		q.Push(ocrTask{Asset: *asset}, ocrPriority)
 	}
 	return nil
 }

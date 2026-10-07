@@ -19,6 +19,51 @@ var migrations = []migration{
 	{version: 3, up: migration003},
 	{version: 4, up: migration004},
 	{version: 5, up: migration005},
+	{version: 6, up: migration006},
+}
+
+// migration006 adds the ocr pipeline. asset_ocr holds the text lines read
+// from an asset, one row per detected box, in reading order. The box is
+// the rotated quadrilateral around the line, its corners clockwise from
+// top-left, with coordinates relative to the image (0..1) so they do not
+// depend on the resolution ocr ran at. ocr_status uses the same 0 =
+// pending, 1 = ok, 2 = failed encoding as the other status columns;
+// existing assets start pending so they get read too.
+func migration006(tx *sql.Tx) error {
+	statements := []string{
+		`alter table assets add column ocr_status integer not null default 0`,
+		`create table if not exists asset_ocr (
+		    id integer primary key autoincrement,
+		    asset_id integer not null references assets (id) on delete cascade,
+
+		    -- position of the line in reading order, from 0
+		    line integer not null,
+
+		    -- rotated box corners, clockwise from top-left, relative to the
+		    -- image size (0..1)
+		    x1 real not null,
+		    y1 real not null,
+		    x2 real not null,
+		    y2 real not null,
+		    x3 real not null,
+		    y3 real not null,
+		    x4 real not null,
+		    y4 real not null,
+
+		    text text not null,
+
+		    -- mean detection probability inside the box
+		    box_score real not null,
+		    -- mean recognizer confidence of the characters
+		    text_score real not null
+		)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("migration006: %w", err)
+		}
+	}
+	return nil
 }
 
 // migration005 makes asset_clip_embeddings_vec the only copy of the clip
