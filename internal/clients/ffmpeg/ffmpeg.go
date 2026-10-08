@@ -115,7 +115,7 @@ func (f *FFmpeg) Preview(ctx context.Context, source string, quality int) ([]byt
 // at most size, into an RGB image. ffmpeg writes it back as an uncompressed
 // PPM: a short "P6 <width> <height> 255" text header followed by raw RGB
 // bytes.
-func (f *FFmpeg) Decode(ctx context.Context, source string, size int) (*image.NRGBA, error) {
+func (f *FFmpeg) Decode(ctx context.Context, source string, size int) (*image.RGBA, error) {
 	filter := fmt.Sprintf("scale='if(lt(iw,ih),min(iw,%[1]d),-2)':'if(lt(iw,ih),-2,min(ih,%[1]d))',format=rgb24", size)
 	cmd := exec.CommandContext(ctx, f.Path,
 		"-loglevel", "error",
@@ -148,7 +148,7 @@ func (f *FFmpeg) Decode(ctx context.Context, source string, size int) (*image.NR
 		return nil, fmt.Errorf("ffmpeg decode %s: read ppm pixels: %w", source, err)
 	}
 
-	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for i := range w * h {
 		copy(img.Pix[i*4:], rgb[i*3:i*3+3])
 		img.Pix[i*4+3] = 255

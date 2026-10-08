@@ -64,10 +64,12 @@ func (p *processor) processOCR(asset entity.Asset) error {
 		return err
 	}
 
+	// total_ms leaves out the time spent waiting for the disk and for other
+	// inference, which are logged on their own.
 	log.Printf(
 		"ocred asset=%d path=%s boxes=%d total_ms=%d disk_wait_ms=%d decode_ms=%d detection_ms=%d recognition_ms=%d inference_wait_ms=%d inference_ms=%d",
 		asset.ID, path, len(boxes),
-		time.Since(started).Milliseconds(),
+		time.Since(started).Milliseconds()-waited.Milliseconds()-timings.InferenceWaitMs,
 		waited.Milliseconds(), decodeMs,
 		timings.DetectionMs, timings.RecognitionMs, timings.InferenceWaitMs, timings.InferenceMs,
 	)
@@ -77,8 +79,8 @@ func (p *processor) processOCR(asset entity.Asset) error {
 // decodeOCRPreview has ffmpeg decode the library file at path, while the
 // disk is held, into the preview the recognizer reads crops from, and
 // returns how long it waited for the disk.
-func (p *processor) decodeOCRPreview(path string) (*image.NRGBA, time.Duration, error) {
-	var img *image.NRGBA
+func (p *processor) decodeOCRPreview(path string) (*image.RGBA, time.Duration, error) {
+	var img *image.RGBA
 	waited, err := p.disk.Do(p.ctx, "ocr "+path, func() error {
 		var err error
 		img, err = p.ffmpeg.Decode(p.ctx, media.ResolveLibraryPath(p.libraryDir, path), ai.OCRPreviewSize)

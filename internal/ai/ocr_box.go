@@ -129,12 +129,12 @@ type quad [4]point
 
 // crop samples q out of img as an upright image, turning it a quarter turn
 // when it is 1.5x taller than wide, like PP-OCR does for vertical text.
-func crop(img *image.NRGBA, q quad) *image.NRGBA {
+func crop(img *image.RGBA, q quad) *image.RGBA {
 	w := max(1, int(math.Max(q[0].dist(q[1]), q[3].dist(q[2]))))
 	h := max(1, int(math.Max(q[0].dist(q[3]), q[1].dist(q[2]))))
 	across, down := q[1].sub(q[0]), q[3].sub(q[0])
 
-	out := image.NewNRGBA(image.Rect(0, 0, w, h))
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := range h {
 		for x := range w {
 			p := q[0].add(across.mul((float64(x) + 0.5) / float64(w))).add(down.mul((float64(y) + 0.5) / float64(h)))
@@ -146,7 +146,7 @@ func crop(img *image.NRGBA, q quad) *image.NRGBA {
 	}
 
 	// Rotate a quarter turn counterclockwise.
-	rotated := image.NewNRGBA(image.Rect(0, 0, h, w))
+	rotated := image.NewRGBA(image.Rect(0, 0, h, w))
 	for y := range w {
 		for x := range h {
 			copy(rotated.Pix[rotated.PixOffset(x, y):], out.Pix[out.PixOffset(w-1-y, x):][:4])
@@ -156,7 +156,7 @@ func crop(img *image.NRGBA, q quad) *image.NRGBA {
 }
 
 // bilinear returns the RGBA color at p, blending the four nearest pixels.
-func bilinear(img *image.NRGBA, p point) []uint8 {
+func bilinear(img *image.RGBA, p point) []uint8 {
 	b := img.Bounds()
 	x, y := p.x-0.5, p.y-0.5 // pixel centers sit at +0.5
 	x0, y0 := int(math.Floor(x)), int(math.Floor(y))

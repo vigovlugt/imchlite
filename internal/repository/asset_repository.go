@@ -242,9 +242,9 @@ func (r *Asset) ReplaceOCRBoxes(ctx context.Context, assetID int64, boxes []enti
 	}
 	for i, b := range boxes {
 		if _, err := tx.ExecContext(ctx,
-			`insert into asset_ocr_boxes (asset_id, position, x1, y1, x2, y2, x3, y3, x4, y4, box_score, text_score, text)
-			 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			assetID, i,
+			`insert into asset_ocr_boxes (asset_id, position, line, x1, y1, x2, y2, x3, y3, x4, y4, box_score, text_score, text)
+			 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			assetID, i, b.Line,
 			b.Corners[0].X, b.Corners[0].Y, b.Corners[1].X, b.Corners[1].Y,
 			b.Corners[2].X, b.Corners[2].Y, b.Corners[3].X, b.Corners[3].Y,
 			b.BoxScore, b.TextScore, b.Text); err != nil {

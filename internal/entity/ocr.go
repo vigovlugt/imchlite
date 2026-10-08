@@ -6,6 +6,9 @@ type OCRBox struct {
 	// Corners are the corners of the rotated box around the text, clockwise
 	// from top-left, relative to the image size (0..1).
 	Corners [4]Point
+	// Line is the line of text the box is on, from 0 at the top; boxes on
+	// one line share it.
+	Line int
 
 	Text string
 

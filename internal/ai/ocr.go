@@ -51,11 +51,20 @@ const (
 	OCRPreviewSize = 1440
 
 	detShortSide = 736 // shortest side of the image fed to the detector (Immich's "maximum resolution")
-	detThreshold = 0.3 // pixel probability above which a pixel is "text"
-	boxThreshold = 0.5 // minimum mean probability for a box to be kept
-	minRecScore  = 0.8 // minimum mean character confidence for text to be kept
-	unclipRatio  = 1.6 // how much to grow each box (DB shrinks text regions)
-	recHeight    = 48  // the recognizer expects 48px high crops
+	// detMaxLongSide caps the longest side of the image fed to the detector,
+	// as its gpu memory grows with the image: a tall scrolling screenshot
+	// would otherwise need over a gigabyte.
+	detMaxLongSide = 2400
+	detThreshold   = 0.3 // pixel probability above which a pixel is "text"
+	boxThreshold   = 0.5 // minimum mean probability for a box to be kept
+	minRecScore    = 0.8 // minimum mean character confidence for text to be kept
+	unclipRatio    = 1.6 // how much to grow each box (DB shrinks text regions)
+	recHeight      = 48  // the recognizer expects 48px high crops
+	// recMaxBatchWidth caps the crops in one recognizer call times their
+	// padded width: the memory a call needs grows with both. At 32768 a
+	// batch took about 1.6GB of gpu memory, and at 8192 the whole process
+	// peaked at about 1.9GB.
+	recMaxBatchWidth = 16384
 
 	ocrInputName       = "image"
 	detectionOutput    = "dbnet_probs"
@@ -173,6 +182,8 @@ func (o *OCR) Close() error {
 // OCRTimings holds the wall-clock duration in milliseconds of each stage of
 // reading one image.
 type OCRTimings struct {
+	// DetectionMs and RecognitionMs exclude the time spent waiting for
+	// other inference to finish.
 	DetectionMs   int64
 	RecognitionMs int64
 	// InferenceWaitMs is the time spent waiting for other inference to
@@ -186,7 +197,7 @@ type OCRTimings struct {
 // text the recognizer is not confident about are dropped. img should be a preview
 // whose shortest side is at most OCRPreviewSize. It blocks until the
 // background model load finished.
-func (o *OCR) Read(ctx context.Context, img *image.NRGBA) (_ []entity.OCRBox, timings OCRTimings, _ error) {
+func (o *OCR) Read(ctx context.Context, img *image.RGBA) (_ []entity.OCRBox, timings OCRTimings, _ error) {
 	var inference inferenceTime
 	defer func() {
 		timings.InferenceWaitMs = inference.wait.Milliseconds()
@@ -197,9 +208,9 @@ func (o *OCR) Read(ctx context.Context, img *image.NRGBA) (_ []entity.OCRBox, ti
 		return nil, timings, err
 	}
 
-	start := time.Now()
+	start, waited := time.Now(), inference.wait
 	boxes, err := o.detect(ctx, img, &inference)
-	timings.DetectionMs = time.Since(start).Milliseconds()
+	timings.DetectionMs = (time.Since(start) - (inference.wait - waited)).Milliseconds()
 	if err != nil {
 		return nil, timings, fmt.Errorf("detect text: %w", err)
 	}
@@ -208,7 +219,7 @@ func (o *OCR) Read(ctx context.Context, img *image.NRGBA) (_ []entity.OCRBox, ti
 		return nil, timings, nil
 	}
 
-	start = time.Now()
+	start, waited = time.Now(), inference.wait
 	texts, scores, err := o.recognize(ctx, img, boxes, &inference)
 	if err != nil {
 		return nil, timings, fmt.Errorf("recognize text: %w", err)
@@ -222,7 +233,7 @@ func (o *OCR) Read(ctx context.Context, img *image.NRGBA) (_ []entity.OCRBox, ti
 			continue
 		}
 
-		result := entity.OCRBox{Text: text, BoxScore: float64(box.score), TextScore: float64(score)}
+		result := entity.OCRBox{Line: box.line, Text: text, BoxScore: float64(box.score), TextScore: float64(score)}
 		for j, p := range box.quad {
 			result.Corners[j] = entity.Point{
 				X: math.Min(1, math.Max(0, p.x/float64(b.Dx()))),
@@ -231,7 +242,7 @@ func (o *OCR) Read(ctx context.Context, img *image.NRGBA) (_ []entity.OCRBox, ti
 		}
 		results = append(results, result)
 	}
-	timings.RecognitionMs = time.Since(start).Milliseconds()
+	timings.RecognitionMs = (time.Since(start) - (inference.wait - waited)).Milliseconds()
 	return results, timings, nil
 }
 
@@ -253,19 +264,24 @@ type textBox struct {
 
 // detect runs the DB text detector and returns rotated text boxes in img
 // coordinates, in reading order.
-func (o *OCR) detect(ctx context.Context, img *image.NRGBA, inference *inferenceTime) ([]textBox, error) {
-	// Scale so the shortest side is at most detShortSide, with both sides a
-	// multiple of 32 as the network requires.
+func (o *OCR) detect(ctx context.Context, img *image.RGBA, inference *inferenceTime) ([]textBox, error) {
+	// Scale so the shortest side is at most detShortSide and the longest at
+	// most detMaxLongSide, with both sides a multiple of 32 as the network
+	// requires.
 	b := img.Bounds()
-	scale := math.Min(1, float64(detShortSide)/float64(min(b.Dx(), b.Dy())))
+	scale := math.Min(1, math.Min(
+		float64(detShortSide)/float64(min(b.Dx(), b.Dy())),
+		float64(detMaxLongSide)/float64(max(b.Dx(), b.Dy()))))
 	w := max(32, int(math.Round(float64(b.Dx())*scale/32))*32)
 	h := max(32, int(math.Round(float64(b.Dy())*scale/32))*32)
 
-	resized := image.NewNRGBA(image.Rect(0, 0, w, h))
-	draw.CatmullRom.Scale(resized, resized.Bounds(), img, b, draw.Src, nil)
+	// Bilinear, like Paddle's cv2.resize: the detector needs no sharper
+	// kernel, and the approximate one is several times faster.
+	resized := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.ApproxBiLinear.Scale(resized, resized.Bounds(), img, b, draw.Src, nil)
 
 	// The output is a [1, h, w] map of per-pixel text probabilities.
-	outputs, err := runOCR(ctx, o.detection, []*image.NRGBA{resized}, inference, detectionOutput)
+	outputs, err := runOCR(ctx, o.detection, []*image.RGBA{resized}, inference, detectionOutput)
 	if err != nil {
 		return nil, err
 	}
@@ -406,9 +422,10 @@ func boxScore(box box, probs []float32, w, h int) float32 {
 // it together with its mean character confidence. Each call has a fixed
 // cost, so the crops are read in batches of similar width: sorted by width,
 // with a new batch started when a crop is over twice as wide as the
-// narrowest in the batch, as every crop is padded to the widest.
-func (o *OCR) recognize(ctx context.Context, img *image.NRGBA, boxes []textBox, inference *inferenceTime) ([]string, []float32, error) {
-	crops := make([]*image.NRGBA, len(boxes))
+// narrowest in the batch, as every crop is padded to the widest, or when the
+// batch would exceed recMaxBatchWidth.
+func (o *OCR) recognize(ctx context.Context, img *image.RGBA, boxes []textBox, inference *inferenceTime) ([]string, []float32, error) {
+	crops := make([]*image.RGBA, len(boxes))
 	widths := make([]int, len(boxes))
 	order := make([]int, len(boxes))
 	for i, box := range boxes {
@@ -423,12 +440,15 @@ func (o *OCR) recognize(ctx context.Context, img *image.NRGBA, boxes []textBox, 
 	scores := make([]float32, len(boxes))
 	for start := 0; start < len(order); {
 		end := start + 1
-		for end < len(order) && widths[order[end]] <= 2*widths[order[start]] {
+		// Sorted by width, so the next crop is the widest: its padded width
+		// is the batch's.
+		for end < len(order) && widths[order[end]] <= 2*widths[order[start]] &&
+			(end-start+1)*paddedWidth(widths[order[end]]) <= recMaxBatchWidth {
 			end++
 		}
 		batch := order[start:end]
 
-		batchCrops := make([]*image.NRGBA, len(batch))
+		batchCrops := make([]*image.RGBA, len(batch))
 		batchWidths := make([]int, len(batch))
 		for i, k := range batch {
 			batchCrops[i], batchWidths[i] = crops[k], widths[k]
@@ -445,17 +465,23 @@ func (o *OCR) recognize(ctx context.Context, img *image.NRGBA, boxes []textBox, 
 	return texts, scores, nil
 }
 
+// paddedWidth is the width of a recognizer input whose widest crop is w
+// wide: 1.25x it, leaving room past the text.
+func paddedWidth(w int) int {
+	return int(math.Ceil(float64(w) * 1.25))
+}
+
 // recognizeBatch reads the text in crops, resized to the given widths, in
 // one call, and returns it together with its mean character confidence.
-func (o *OCR) recognizeBatch(ctx context.Context, crops []*image.NRGBA, widths []int, inference *inferenceTime) ([]string, []float32, error) {
+func (o *OCR) recognizeBatch(ctx context.Context, crops []*image.RGBA, widths []int, inference *inferenceTime) ([]string, []float32, error) {
 	// Resize each crop to 48px high and pad it on the right with gray. Like
 	// Immich, leave room past the text, as the recognizer reads a line worse
 	// without: at least 1.25x its width, and more for all but the widest
 	// crop, as the batch shares one width.
-	batchWidth := int(math.Ceil(float64(slices.Max(widths)) * 1.25))
-	inputs := make([]*image.NRGBA, len(crops))
+	batchWidth := paddedWidth(slices.Max(widths))
+	inputs := make([]*image.RGBA, len(crops))
 	for i, text := range crops {
-		inputs[i] = image.NewNRGBA(image.Rect(0, 0, batchWidth, recHeight))
+		inputs[i] = image.NewRGBA(image.Rect(0, 0, batchWidth, recHeight))
 		draw.Draw(inputs[i], inputs[i].Bounds(), image.NewUniform(color.Gray{127}), image.Point{}, draw.Src)
 		draw.CatmullRom.Scale(inputs[i], image.Rect(0, 0, widths[i], recHeight), text, text.Bounds(), draw.Src, nil)
 	}
@@ -511,7 +537,7 @@ func (o *OCR) recognizeBatch(ctx context.Context, crops []*image.NRGBA, widths [
 // RGB bytes in [batch, H, W, 3] layout (the models normalize internally)
 // and returns the named outputs, which the caller must close. It adds the
 // time spent to inference.
-func runOCR(ctx context.Context, session *onnxruntime.Session, imgs []*image.NRGBA, inference *inferenceTime, outputNames ...string) (map[string]*ort.Tensor, error) {
+func runOCR(ctx context.Context, session *onnxruntime.Session, imgs []*image.RGBA, inference *inferenceTime, outputNames ...string) (map[string]*ort.Tensor, error) {
 	b := imgs[0].Bounds()
 	pixels := make([]uint8, 0, len(imgs)*b.Dx()*b.Dy()*3)
 	for _, img := range imgs {

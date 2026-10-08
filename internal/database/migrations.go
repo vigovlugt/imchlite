@@ -40,6 +40,9 @@ func migration006(tx *sql.Tx) error {
 
 		    -- position of the box in reading order, from 0
 		    position integer not null,
+		    -- line of text the box is on, from 0 at the top; boxes on one
+		    -- line share it. Lines whose boxes were all dropped leave gaps.
+		    line integer not null,
 
 		    -- rotated box corners, clockwise from top-left, relative to the
 		    -- image size (0..1)
