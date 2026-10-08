@@ -22,22 +22,24 @@ var migrations = []migration{
 	{version: 6, up: migration006},
 }
 
-// migration006 adds the ocr pipeline. asset_ocr holds the text lines read
-// from an asset, one row per detected box, in reading order. The box is
-// the rotated quadrilateral around the line, its corners clockwise from
-// top-left, with coordinates relative to the image (0..1) so they do not
+// migration006 adds the ocr pipeline. asset_ocr_boxes holds the text read
+// from an asset, one row per box the detector found, in reading order. A
+// box is usually a line of text, but one line can be split into several
+// boxes where its words are far apart. The box is the rotated
+// quadrilateral around the text, its corners clockwise from top-left, with coordinates relative to the image (0..1) so they do not
 // depend on the resolution ocr ran at. ocr_status uses the same 0 =
-// pending, 1 = ok, 2 = failed encoding as the other status columns;
-// existing assets start pending so they get read too.
+// pending, 1 = ok, 2 = failed encoding as the other status columns, plus
+// 3 = skipped for videos, which are not read; existing assets start
+// pending so they get read too.
 func migration006(tx *sql.Tx) error {
 	statements := []string{
 		`alter table assets add column ocr_status integer not null default 0`,
-		`create table if not exists asset_ocr (
+		`create table if not exists asset_ocr_boxes (
 		    id integer primary key autoincrement,
 		    asset_id integer not null references assets (id) on delete cascade,
 
-		    -- position of the line in reading order, from 0
-		    line integer not null,
+		    -- position of the box in reading order, from 0
+		    position integer not null,
 
 		    -- rotated box corners, clockwise from top-left, relative to the
 		    -- image size (0..1)

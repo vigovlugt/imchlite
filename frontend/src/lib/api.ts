@@ -43,6 +43,8 @@ export interface AssetFilters {
   type?: 'image' | 'video'
   city?: string
   country?: string
+  /** only assets whose ocr text contains this, keeping the order */
+  ocrText?: string
   includePaths: string[]
   excludePaths: string[]
   from?: number
@@ -112,6 +114,7 @@ function filtersToParams(f: AssetFilters, cursor?: string): string {
   if (f.type) params.set('type', f.type)
   if (f.city) params.set('city', f.city)
   if (f.country) params.set('country', f.country)
+  if (f.ocrText) params.set('ocr_text', f.ocrText)
   for (const p of f.includePaths) params.append('include_path', p)
   for (const p of f.excludePaths) params.append('exclude_path', p)
   if (f.from !== undefined) params.set('from', String(f.from))

@@ -1,9 +1,11 @@
 package ffmpeg
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"os/exec"
@@ -107,4 +109,49 @@ func (f *FFmpeg) Preview(ctx context.Context, source string, quality int) ([]byt
 		"pipe:1",
 	)
 	return stdout, err
+}
+
+// Decode decodes the first frame of source, shrunk so its shortest side is
+// at most size, into an RGB image. ffmpeg writes it back as an uncompressed
+// PPM: a short "P6 <width> <height> 255" text header followed by raw RGB
+// bytes.
+func (f *FFmpeg) Decode(ctx context.Context, source string, size int) (*image.NRGBA, error) {
+	filter := fmt.Sprintf("scale='if(lt(iw,ih),min(iw,%[1]d),-2)':'if(lt(iw,ih),-2,min(ih,%[1]d))',format=rgb24", size)
+	cmd := exec.CommandContext(ctx, f.Path,
+		"-loglevel", "error",
+		"-i", source,
+		// Complex filtergraph for tiled HEIF/HEIC images (Apple Photos).
+		"-filter_complex", filter+"[out]",
+		"-map", "[out]",
+		"-frames:v", "1",
+		"-f", "image2pipe",
+		"-c:v", "ppm",
+		"pipe:1",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg decode %s: %w: %s", source, err, stderr.String())
+	}
+
+	br := bufio.NewReader(&stdout)
+	var w, h, maxValue int
+	if _, err := fmt.Fscanf(br, "P6\n%d %d\n%d\n", &w, &h, &maxValue); err != nil {
+		return nil, fmt.Errorf("ffmpeg decode %s: read ppm header: %w", source, err)
+	}
+	if maxValue != 255 || w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("ffmpeg decode %s: unexpected ppm %dx%d with max value %d", source, w, h, maxValue)
+	}
+	rgb := make([]byte, w*h*3)
+	if _, err := io.ReadFull(br, rgb); err != nil {
+		return nil, fmt.Errorf("ffmpeg decode %s: read ppm pixels: %w", source, err)
+	}
+
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for i := range w * h {
+		copy(img.Pix[i*4:], rgb[i*3:i*3+3])
+		img.Pix[i*4+3] = 255
+	}
+	return img, nil
 }

@@ -40,7 +40,7 @@ func main() {
 	workers := flag.Int("workers", runtime.NumCPU(), "number of parallel asset processors")
 	maxDiskConcurrency := flag.Int("max-disk-concurrency", 1, "maximum number of simultaneous reads from the library's storage; 1 keeps reads sequential, which is fastest on spinning disks; 0 means no maximum")
 	noBrowser := flag.Bool("no-browser", false, "do not open the frontend in a browser on startup")
-	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip) that failed in a previous run")
+	retryFailed := flag.Bool("retry-failed", false, "retry asset processing steps (thumbnail, clip, ocr) that failed in a previous run")
 	serveOnly := flag.Bool("serve-only", false, "only run the api server; do not index the library or process assets")
 	indexOnly := flag.Bool("index-only", false, "index the library and process all assets, then exit; do not run the api server")
 	var excludes utils.Excludes
@@ -162,12 +162,24 @@ func main() {
 		defer clip.Close()
 		log.Printf("debug: set up clip visual model in %s", time.Since(start))
 
+		start = time.Now()
+		ocrDir, err := ai.SetupOCR(ctx)
+		if err != nil {
+			log.Fatalf("download ocr models: %v", err)
+		}
+		ocr, err := ai.NewOCR(ocrDir, rt)
+		if err != nil {
+			log.Fatalf("create ocr models: %v", err)
+		}
+		defer ocr.Close()
+		log.Printf("debug: set up ocr models in %s", time.Since(start))
+
 		fileRepo := repository.NewFileRepository(db)
 		disk := disk.New(*maxDiskConcurrency)
 		go disk.Watch(ctx, 30*time.Second)
-		processor := tasks.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, *retryFailed)
+		processor := tasks.NewProcessor(ctx, libraryDir, dataDir, excludes, f, disk, fileRepo, assetRepo, clip, ocr, *retryFailed)
 
-		// Indexing also re-enqueues metadata, thumbnail and clip tasks lost by a previous restart.
+		// Indexing also re-enqueues metadata, thumbnail, clip and ocr tasks lost by a previous restart.
 		tasks.EnqueueIndexTask(queue)
 
 		for range *workers {

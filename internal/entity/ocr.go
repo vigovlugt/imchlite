@@ -1,11 +1,11 @@
 package entity
 
-// OCRLine mirrors the asset_ocr table in migration006: one line of text
-// read from an asset.
-type OCRLine struct {
-	// Box is the rotated box around the line, its corners clockwise from
-	// top-left, relative to the image size (0..1).
-	Box [4]Point
+// OCRBox mirrors the asset_ocr_boxes table in migration006: the text read
+// from one box the detector found in an asset.
+type OCRBox struct {
+	// Corners are the corners of the rotated box around the text, clockwise
+	// from top-left, relative to the image size (0..1).
+	Corners [4]Point
 
 	Text string
 

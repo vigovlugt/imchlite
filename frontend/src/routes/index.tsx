@@ -70,6 +70,8 @@ interface AssetSearch {
   type?: "image" | "video";
   city?: string;
   country?: string;
+  /** text read from the asset by ocr */
+  text?: string;
   include?: string;
   exclude?: string;
   from?: number;
@@ -90,6 +92,7 @@ function parseSearch(search: Record<string, unknown>): AssetSearch {
   if (typeof search.city === "string" && search.city) s.city = search.city;
   if (typeof search.country === "string" && search.country)
     s.country = search.country;
+  if (typeof search.text === "string" && search.text) s.text = search.text;
   if (typeof search.include === "string" && search.include)
     s.include = search.include;
   if (typeof search.exclude === "string" && search.exclude)
@@ -111,6 +114,7 @@ function filtersFromSearch(search: AssetSearch): AssetFilters {
     type: search.type,
     city: search.city,
     country: search.country,
+    ocrText: search.text,
     includePaths: search.include ? search.include.split(",") : [],
     excludePaths: search.exclude ? search.exclude.split(",") : [],
     from: search.from,
@@ -248,6 +252,7 @@ function Home() {
     filters.type !== undefined ||
     filters.city !== undefined ||
     filters.country !== undefined ||
+    filters.ocrText !== undefined ||
     filters.includePaths.length > 0 ||
     filters.excludePaths.length > 0 ||
     filters.from !== undefined ||
@@ -681,6 +686,7 @@ function AppSidebar({
       type: undefined,
       city: undefined,
       country: undefined,
+      text: undefined,
       include: undefined,
       exclude: undefined,
       from: undefined,
@@ -848,9 +854,10 @@ function AppSidebar({
         </SidebarGroup>
 
         <SidebarGroup>
-          <SidebarGroupLabel>Search</SidebarGroupLabel>
+          <SidebarGroupLabel>Context</SidebarGroupLabel>
           <SidebarGroupContent>
             <SearchInput
+              placeholder="Describe what to find…"
               value={search.context_query ?? ""}
               onCommit={(v) =>
                 setFilters({
@@ -859,6 +866,17 @@ function AppSidebar({
                   ...(v ? { similar_to: undefined } : {}),
                 })
               }
+            />
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Text</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SearchInput
+              placeholder="Text in the photo…"
+              value={search.text ?? ""}
+              onCommit={(v) => setFilters({ text: v || undefined })}
             />
           </SidebarGroupContent>
         </SidebarGroup>
@@ -873,9 +891,11 @@ function AppSidebar({
 }
 
 function SearchInput({
+  placeholder,
   value,
   onCommit,
 }: {
+  placeholder: string;
   value: string;
   onCommit: (value: string) => void;
 }) {
@@ -895,7 +915,7 @@ function SearchInput({
     >
       <Input
         type="search"
-        placeholder="Describe what to find…"
+        placeholder={placeholder}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}

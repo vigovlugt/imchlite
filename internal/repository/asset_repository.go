@@ -228,27 +228,27 @@ func (r *Asset) SetOCRStatus(ctx context.Context, assetID int64, status entity.T
 	return nil
 }
 
-// ReplaceOCRLines stores the text lines read from an asset, in reading
+// ReplaceOCRBoxes stores the text boxes read from an asset, in reading
 // order, replacing any it had, and marks its ocr step ok.
-func (r *Asset) ReplaceOCRLines(ctx context.Context, assetID int64, lines []entity.OCRLine) error {
+func (r *Asset) ReplaceOCRBoxes(ctx context.Context, assetID int64, boxes []entity.OCRBox) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("replace ocr lines for asset %d: begin: %w", assetID, err)
+		return fmt.Errorf("replace ocr boxes for asset %d: begin: %w", assetID, err)
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `delete from asset_ocr where asset_id = ?`, assetID); err != nil {
-		return fmt.Errorf("replace ocr lines for asset %d: delete: %w", assetID, err)
+	if _, err := tx.ExecContext(ctx, `delete from asset_ocr_boxes where asset_id = ?`, assetID); err != nil {
+		return fmt.Errorf("replace ocr boxes for asset %d: delete: %w", assetID, err)
 	}
-	for i, l := range lines {
+	for i, b := range boxes {
 		if _, err := tx.ExecContext(ctx,
-			`insert into asset_ocr (asset_id, line, x1, y1, x2, y2, x3, y3, x4, y4, box_score, text_score, text)
+			`insert into asset_ocr_boxes (asset_id, position, x1, y1, x2, y2, x3, y3, x4, y4, box_score, text_score, text)
 			 values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			assetID, i,
-			l.Box[0].X, l.Box[0].Y, l.Box[1].X, l.Box[1].Y,
-			l.Box[2].X, l.Box[2].Y, l.Box[3].X, l.Box[3].Y,
-			l.BoxScore, l.TextScore, l.Text); err != nil {
-			return fmt.Errorf("replace ocr lines for asset %d: insert: %w", assetID, err)
+			b.Corners[0].X, b.Corners[0].Y, b.Corners[1].X, b.Corners[1].Y,
+			b.Corners[2].X, b.Corners[2].Y, b.Corners[3].X, b.Corners[3].Y,
+			b.BoxScore, b.TextScore, b.Text); err != nil {
+			return fmt.Errorf("replace ocr boxes for asset %d: insert: %w", assetID, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -257,7 +257,7 @@ func (r *Asset) ReplaceOCRLines(ctx context.Context, assetID int64, lines []enti
 		return fmt.Errorf("set ocr status for asset %d: %w", assetID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("replace ocr lines for asset %d: commit: %w", assetID, err)
+		return fmt.Errorf("replace ocr boxes for asset %d: commit: %w", assetID, err)
 	}
 	return nil
 }
@@ -281,6 +281,9 @@ type AssetQuery struct {
 	Type         *entity.AssetType
 	City         *string
 	Country      *string
+	// OCRText: the text read from the asset, its boxes joined in reading
+	// order, contains this text, ignoring ASCII case.
+	OCRText *string
 	// From/Until bound the capture time (unix epoch seconds), inclusive.
 	From  *int64
 	Until *int64
@@ -436,6 +439,14 @@ func assetFilterConds(q AssetQuery) ([]string, []any) {
 		conds = append(conds, "a.country = ?")
 		args = append(args, *q.Country)
 	}
+	if q.OCRText != nil {
+		// Joining the boxes lets a phrase match across boxes on one line.
+		conds = append(conds, `(select group_concat(text, ' ')
+			from (select text from asset_ocr_boxes
+			      where asset_id = a.id
+			      order by position)) like ? escape '\'`)
+		args = append(args, "%"+likeEscaper.Replace(*q.OCRText)+"%")
+	}
 	if q.ExcludeID != 0 {
 		conds = append(conds, "a.id != ?")
 		args = append(args, q.ExcludeID)
@@ -464,6 +475,9 @@ func assetFilterConds(q AssetQuery) ([]string, []any) {
 	}
 	return conds, args
 }
+
+// likeEscaper escapes the LIKE wildcards, with \ as the escape character.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // whereClause joins the conditions with "and", parenthesizing each one.
 func whereClause(conds []string) string {

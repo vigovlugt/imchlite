@@ -9,13 +9,14 @@ const (
 )
 
 // TaskStatus is the progress of one asset processing step: 0 = pending,
-// 1 = ok, 2 = failed.
+// 1 = ok, 2 = failed, 3 = skipped.
 type TaskStatus int
 
 const (
 	TaskStatusPending TaskStatus = 0
 	TaskStatusOK      TaskStatus = 1
 	TaskStatusFailed  TaskStatus = 2
+	TaskStatusSkipped TaskStatus = 3
 )
 
 // Asset mirrors the asset table in migration001.

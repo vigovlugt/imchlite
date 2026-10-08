@@ -189,6 +189,9 @@ func parseAssetQuery(vals url.Values, similarity bool) (repository.AssetQuery, e
 	if c := vals.Get("country"); c != "" {
 		q.Country = &c
 	}
+	if t := strings.TrimSpace(vals.Get("ocr_text")); t != "" {
+		q.OCRText = &t
+	}
 
 	intParam := func(name string) (*int64, error) {
 		s := vals.Get(name)

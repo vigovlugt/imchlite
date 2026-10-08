@@ -50,6 +50,7 @@ type processor struct {
 	files      *repository.File
 	assets     *repository.Asset
 	clip       *ai.ClipVisual
+	ocr        *ai.OCR
 	// excludes are the library paths the indexer skips.
 	excludes utils.Excludes
 	// retryFailed makes failed steps run again, like pending ones.
@@ -57,10 +58,10 @@ type processor struct {
 }
 
 // NewProcessor creates a processor sharing the given repositories, the
-// extracted ffmpeg binary, the library's disk lock and the clip model. With
-// retryFailed, steps that failed in a previous run are run again. Paths
-// matching excludes are not indexed.
-func NewProcessor(ctx context.Context, libraryDir, dataDir string, excludes utils.Excludes, ff *ffmpeg.FFmpeg, d *disk.Disk, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, retryFailed bool) *processor {
+// extracted ffmpeg binary, the library's disk lock and the clip and ocr
+// models. With retryFailed, steps that failed in a previous run are run
+// again. Paths matching excludes are not indexed.
+func NewProcessor(ctx context.Context, libraryDir, dataDir string, excludes utils.Excludes, ff *ffmpeg.FFmpeg, d *disk.Disk, files *repository.File, assets *repository.Asset, clip *ai.ClipVisual, ocr *ai.OCR, retryFailed bool) *processor {
 	return &processor{
 		ctx:         ctx,
 		libraryDir:  libraryDir,
@@ -70,6 +71,7 @@ func NewProcessor(ctx context.Context, libraryDir, dataDir string, excludes util
 		files:       files,
 		assets:      assets,
 		clip:        clip,
+		ocr:         ocr,
 		excludes:    excludes,
 		retryFailed: retryFailed,
 	}
