@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -203,15 +204,20 @@ func (o *OCR) Read(ctx context.Context, img *image.NRGBA) (_ []entity.OCRBox, ti
 		return nil, timings, fmt.Errorf("detect text: %w", err)
 	}
 
+	if len(boxes) == 0 {
+		return nil, timings, nil
+	}
+
 	start = time.Now()
+	texts, scores, err := o.recognize(ctx, img, boxes, &inference)
+	if err != nil {
+		return nil, timings, fmt.Errorf("recognize text: %w", err)
+	}
+
 	b := img.Bounds()
 	var results []entity.OCRBox
-	for _, box := range boxes {
-		text, score, err := o.recognize(ctx, img, box.quad, &inference)
-		if err != nil {
-			return nil, timings, fmt.Errorf("recognize text: %w", err)
-		}
-		text = strings.TrimSpace(text)
+	for i, box := range boxes {
+		text, score := strings.TrimSpace(texts[i]), scores[i]
 		if text == "" || score < minRecScore {
 			continue
 		}
@@ -259,7 +265,7 @@ func (o *OCR) detect(ctx context.Context, img *image.NRGBA, inference *inference
 	draw.CatmullRom.Scale(resized, resized.Bounds(), img, b, draw.Src, nil)
 
 	// The output is a [1, h, w] map of per-pixel text probabilities.
-	outputs, err := runOCR(ctx, o.detection, resized, inference, detectionOutput)
+	outputs, err := runOCR(ctx, o.detection, []*image.NRGBA{resized}, inference, detectionOutput)
 	if err != nil {
 		return nil, err
 	}
@@ -396,70 +402,124 @@ func boxScore(box box, probs []float32, w, h int) float32 {
 	return sum / float32(n)
 }
 
-// recognize reads the text in q with the recognizer and returns it together
-// with its mean character confidence.
-func (o *OCR) recognize(ctx context.Context, img *image.NRGBA, q quad, inference *inferenceTime) (string, float32, error) {
-	text := crop(img, q)
+// recognize reads the text in each of boxes with the recognizer and returns
+// it together with its mean character confidence. Each call has a fixed
+// cost, so the crops are read in batches of similar width: sorted by width,
+// with a new batch started when a crop is over twice as wide as the
+// narrowest in the batch, as every crop is padded to the widest.
+func (o *OCR) recognize(ctx context.Context, img *image.NRGBA, boxes []textBox, inference *inferenceTime) ([]string, []float32, error) {
+	crops := make([]*image.NRGBA, len(boxes))
+	widths := make([]int, len(boxes))
+	order := make([]int, len(boxes))
+	for i, box := range boxes {
+		crops[i] = crop(img, box.quad)
+		b := crops[i].Bounds()
+		widths[i] = max(1, int(math.Ceil(float64(recHeight*b.Dx())/float64(b.Dy()))))
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool { return widths[order[i]] < widths[order[j]] })
 
-	// Resize the crop to 48px high, keeping the aspect ratio, and pad it on
-	// the right with gray to 1.25x its width: like Immich, as the recognizer
-	// reads a line worse without room past the text.
-	b := text.Bounds()
-	w := max(1, int(math.Ceil(float64(recHeight*b.Dx())/float64(b.Dy()))))
-	input := image.NewNRGBA(image.Rect(0, 0, int(math.Ceil(float64(w)*1.25)), recHeight))
-	draw.Draw(input, input.Bounds(), image.NewUniform(color.Gray{127}), image.Point{}, draw.Src)
-	draw.CatmullRom.Scale(input, image.Rect(0, 0, w, recHeight), text, b, draw.Src, nil)
+	texts := make([]string, len(boxes))
+	scores := make([]float32, len(boxes))
+	for start := 0; start < len(order); {
+		end := start + 1
+		for end < len(order) && widths[order[end]] <= 2*widths[order[start]] {
+			end++
+		}
+		batch := order[start:end]
 
-	outputs, err := runOCR(ctx, o.recognition, input, inference, recognitionIndices, recognitionScores)
+		batchCrops := make([]*image.NRGBA, len(batch))
+		batchWidths := make([]int, len(batch))
+		for i, k := range batch {
+			batchCrops[i], batchWidths[i] = crops[k], widths[k]
+		}
+		batchTexts, batchScores, err := o.recognizeBatch(ctx, batchCrops, batchWidths, inference)
+		if err != nil {
+			return nil, nil, err
+		}
+		for i, k := range batch {
+			texts[k], scores[k] = batchTexts[i], batchScores[i]
+		}
+		start = end
+	}
+	return texts, scores, nil
+}
+
+// recognizeBatch reads the text in crops, resized to the given widths, in
+// one call, and returns it together with its mean character confidence.
+func (o *OCR) recognizeBatch(ctx context.Context, crops []*image.NRGBA, widths []int, inference *inferenceTime) ([]string, []float32, error) {
+	// Resize each crop to 48px high and pad it on the right with gray. Like
+	// Immich, leave room past the text, as the recognizer reads a line worse
+	// without: at least 1.25x its width, and more for all but the widest
+	// crop, as the batch shares one width.
+	batchWidth := int(math.Ceil(float64(slices.Max(widths)) * 1.25))
+	inputs := make([]*image.NRGBA, len(crops))
+	for i, text := range crops {
+		inputs[i] = image.NewNRGBA(image.Rect(0, 0, batchWidth, recHeight))
+		draw.Draw(inputs[i], inputs[i].Bounds(), image.NewUniform(color.Gray{127}), image.Point{}, draw.Src)
+		draw.CatmullRom.Scale(inputs[i], image.Rect(0, 0, widths[i], recHeight), text, text.Bounds(), draw.Src, nil)
+	}
+
+	outputs, err := runOCR(ctx, o.recognition, inputs, inference, recognitionIndices, recognitionScores)
 	if err != nil {
-		return "", 0, err
+		return nil, nil, err
 	}
 	defer closeTensors(outputs)
 	indices, err := ort.TensorData[int32](outputs[recognitionIndices])
 	if err != nil {
-		return "", 0, err
+		return nil, nil, err
 	}
 	confidences, err := ort.TensorData[float32](outputs[recognitionScores])
 	if err != nil {
-		return "", 0, err
+		return nil, nil, err
 	}
-	if len(indices) != len(confidences) {
-		return "", 0, fmt.Errorf("recognition output has %d indices and %d confidences", len(indices), len(confidences))
+	if len(indices) != len(confidences) || len(indices)%len(crops) != 0 {
+		return nil, nil, fmt.Errorf("recognition output has %d indices and %d confidences for %d crops", len(indices), len(confidences), len(crops))
 	}
 
-	// The model already picked the best character per time step; finish CTC
-	// decoding by dropping blanks (index 0) and repeats of the previous step.
-	var out strings.Builder
-	var scoreSum float32
-	var n int
-	var prev int32
-	for i, idx := range indices {
-		if idx != 0 && idx != prev {
-			if int(idx) >= len(o.chars) {
-				return "", 0, fmt.Errorf("recognition output class %d outside the %d character alphabet", int(idx), len(o.chars))
+	// The outputs are [batch, steps]. The model already picked the best
+	// character per time step; finish CTC decoding by dropping blanks
+	// (index 0) and repeats of the previous step.
+	steps := len(indices) / len(crops)
+	texts := make([]string, len(crops))
+	scores := make([]float32, len(crops))
+	for b := range crops {
+		var out strings.Builder
+		var scoreSum float32
+		var n int
+		var prev int32
+		for i := b * steps; i < (b+1)*steps; i++ {
+			idx := indices[i]
+			if idx != 0 && idx != prev {
+				if int(idx) >= len(o.chars) {
+					return nil, nil, fmt.Errorf("recognition output class %d outside the %d character alphabet", int(idx), len(o.chars))
+				}
+				out.WriteString(o.chars[int(idx)])
+				scoreSum += confidences[i]
+				n++
 			}
-			out.WriteString(o.chars[int(idx)])
-			scoreSum += confidences[i]
-			n++
+			prev = idx
 		}
-		prev = idx
+		if n > 0 {
+			texts[b], scores[b] = out.String(), scoreSum/float32(n)
+		}
 	}
-	if n == 0 {
-		return "", 0, nil
-	}
-	return out.String(), scoreSum / float32(n), nil
+	return texts, scores, nil
 }
 
-// runOCR feeds img to session as raw RGB bytes in [1, H, W, 3] layout (the
-// models normalize internally) and returns the named outputs, which the
-// caller must close. It adds the time spent to inference.
-func runOCR(ctx context.Context, session *onnxruntime.Session, img *image.NRGBA, inference *inferenceTime, outputNames ...string) (map[string]*ort.Tensor, error) {
-	b := img.Bounds()
-	pixels := make([]uint8, 0, b.Dx()*b.Dy()*3)
-	for i := 0; i < len(img.Pix); i += 4 {
-		pixels = append(pixels, img.Pix[i], img.Pix[i+1], img.Pix[i+2])
+// runOCR feeds imgs, which must all have the same size, to session as raw
+// RGB bytes in [batch, H, W, 3] layout (the models normalize internally)
+// and returns the named outputs, which the caller must close. It adds the
+// time spent to inference.
+func runOCR(ctx context.Context, session *onnxruntime.Session, imgs []*image.NRGBA, inference *inferenceTime, outputNames ...string) (map[string]*ort.Tensor, error) {
+	b := imgs[0].Bounds()
+	pixels := make([]uint8, 0, len(imgs)*b.Dx()*b.Dy()*3)
+	for _, img := range imgs {
+		for i := 0; i < len(img.Pix); i += 4 {
+			pixels = append(pixels, img.Pix[i], img.Pix[i+1], img.Pix[i+2])
+		}
 	}
-	input, err := ort.CreateTensor([]int64{1, int64(b.Dy()), int64(b.Dx()), 3}, pixels)
+	input, err := ort.CreateTensor([]int64{int64(len(imgs)), int64(b.Dy()), int64(b.Dx()), 3}, pixels)
 	if err != nil {
 		return nil, err
 	}
