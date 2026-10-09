@@ -6,6 +6,8 @@ export interface AssetSearch {
   context_query?: string;
   /** checksum of the asset to find similar assets to */
   similar_to?: string;
+  /** comma separated checksums of the only assets to show */
+  asset?: string;
   type?: "image" | "video";
   city?: string;
   country?: string;
@@ -27,6 +29,12 @@ export function parseSearch(search: Record<string, unknown>): AssetSearch {
     /^[0-9a-f]{64}$/.test(search.similar_to)
   )
     s.similar_to = search.similar_to;
+  if (typeof search.asset === "string") {
+    const assets = search.asset
+      .split(",")
+      .filter((c) => /^[0-9a-f]{64}$/.test(c));
+    if (assets.length > 0) s.asset = assets.join(",");
+  }
   if (search.type === "image" || search.type === "video") s.type = search.type;
   if (typeof search.city === "string" && search.city) s.city = search.city;
   if (typeof search.country === "string" && search.country)
@@ -51,6 +59,7 @@ export function filtersFromSearch(search: AssetSearch): AssetFilters {
     ocrText: search.text,
     includePaths: search.include ? search.include.split(",") : [],
     excludePaths: search.exclude ? search.exclude.split(",") : [],
+    assets: search.asset ? search.asset.split(",") : undefined,
     from: search.from,
     until: search.until,
     contextQuery: search.context_query,

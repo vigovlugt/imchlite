@@ -79,10 +79,6 @@ function AssetViewer() {
         )
       }
       onClose={onClose}
-      onFindSimilar={() =>
-        // Start a fresh search: drop all other filters.
-        void navigate({ to: "/", search: { similar_to: checksum } })
-      }
       onPrev={index > 0 ? () => goTo(assets[index - 1].checksum) : undefined}
       onNext={
         index >= 0 && index < assets.length - 1

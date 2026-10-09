@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -23,14 +24,12 @@ export function Lightbox({
   asset,
   placeholder,
   onClose,
-  onFindSimilar,
   onPrev,
   onNext,
 }: {
   asset?: Asset;
   placeholder?: ReactNode;
   onClose: () => void;
-  onFindSimilar?: () => void;
   onPrev?: () => void;
   onNext?: () => void;
 }) {
@@ -75,13 +74,15 @@ export function Lightbox({
           )}
         </div>
         <div className="flex items-center gap-1">
-          {asset && onFindSimilar && (
+          {asset && (
             <Button
               variant="ghost"
               size="icon"
               title="Find similar"
               aria-label="Find similar"
-              onClick={onFindSimilar}
+              // Start a fresh search: drop all other filters.
+              render={<Link to="/" search={{ similar_to: asset.checksum }} />}
+              nativeButton={false}
               className="text-neutral-400 hover:bg-white/10 hover:text-white"
             >
               <SparklesIcon />

@@ -47,6 +47,8 @@ export interface AssetFilters {
   ocrText?: string
   includePaths: string[]
   excludePaths: string[]
+  /** only the assets with these checksums */
+  assets?: string[]
   from?: number
   until?: number
   /** ranks by clip similarity to this text query instead of filtering by date */
@@ -117,6 +119,7 @@ function filtersToParams(f: AssetFilters, cursor?: string): string {
   if (f.ocrText) params.set('ocr_text', f.ocrText)
   for (const p of f.includePaths) params.append('include_path', p)
   for (const p of f.excludePaths) params.append('exclude_path', p)
+  for (const c of f.assets ?? []) params.append('asset', c)
   if (f.from !== undefined) params.set('from', String(f.from))
   if (f.until !== undefined) params.set('until', String(f.until))
   if (f.contextQuery) params.set('context_query', f.contextQuery)

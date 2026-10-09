@@ -276,9 +276,11 @@ type AssetQuery struct {
 	// ExcludePaths: none of the asset's files matches any of these SQLite
 	// GLOB patterns, ignoring ASCII case.
 	ExcludePaths []string
-	Type         *entity.AssetType
-	City         *string
-	Country      *string
+	// Assets: the asset's checksum is one of these.
+	Assets  [][]byte
+	Type    *entity.AssetType
+	City    *string
+	Country *string
 	// OCRText: the text read from the asset, its boxes joined in reading
 	// order, contains this text, ignoring ASCII case.
 	OCRText *string
@@ -423,7 +425,14 @@ func clampLimit(limit int) int {
 // they page over is query specific.
 func assetFilterConds(q AssetQuery) ([]string, []any) {
 	conds := []string{"a.deleted_at is null", processedCond, hasOnlineFileCond}
-	args := make([]any, 0, len(q.IncludePaths)+len(q.ExcludePaths)+8)
+	args := make([]any, 0, len(q.IncludePaths)+len(q.ExcludePaths)+len(q.Assets)+8)
+
+	if len(q.Assets) > 0 {
+		conds = append(conds, "a.checksum in (?"+strings.Repeat(", ?", len(q.Assets)-1)+")")
+		for _, c := range q.Assets {
+			args = append(args, c)
+		}
+	}
 
 	if q.Type != nil {
 		conds = append(conds, "a.type = ?")

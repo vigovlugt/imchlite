@@ -166,6 +166,7 @@ function Timeline() {
     filters.ocrText !== undefined ||
     filters.includePaths.length > 0 ||
     filters.excludePaths.length > 0 ||
+    filters.assets !== undefined ||
     filters.from !== undefined ||
     filters.until !== undefined;
 
@@ -433,6 +434,7 @@ function AppSidebar({
     setFilters({
       context_query: undefined,
       similar_to: undefined,
+      asset: undefined,
       type: undefined,
       city: undefined,
       country: undefined,

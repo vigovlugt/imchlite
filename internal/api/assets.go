@@ -163,12 +163,21 @@ func decodeSimilarCursor(s string) (repository.SimilarCursor, error) {
 
 // parseAssetQuery reads the asset filters from query parameters. All
 // parameters are optional. include_path/exclude_path values are SQLite GLOB
-// patterns matched against each file path, ignoring ASCII case. When similarity is set the cursor
+// patterns matched against each file path, ignoring ASCII case. asset values
+// are hex checksums; the asset must be one of them. When similarity is set the cursor
 // is decoded as a similarity position rather than a capture-time one.
 func parseAssetQuery(vals url.Values, similarity bool) (repository.AssetQuery, error) {
 	q := repository.AssetQuery{
 		IncludePaths: media.ToSlashPaths(vals["include_path"]),
 		ExcludePaths: media.ToSlashPaths(vals["exclude_path"]),
+	}
+
+	for _, s := range vals["asset"] {
+		c, ok := parseChecksum(s)
+		if !ok {
+			return q, fmt.Errorf("invalid asset %q: want a hex checksum", s)
+		}
+		q.Assets = append(q.Assets, c)
 	}
 
 	switch t := vals.Get("type"); t {
