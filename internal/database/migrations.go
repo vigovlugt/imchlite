@@ -20,6 +20,18 @@ var migrations = []migration{
 	{version: 4, up: migration004},
 	{version: 5, up: migration005},
 	{version: 6, up: migration006},
+	{version: 7, up: migration007},
+}
+
+// migration007 indexes asset_ocr_boxes by asset, in reading order. Without
+// it, filtering on ocr text and deleting an asset scan every box of every
+// asset.
+func migration007(tx *sql.Tx) error {
+	if _, err := tx.Exec(`create index if not exists asset_ocr_boxes_asset_id_idx
+		on asset_ocr_boxes (asset_id, position)`); err != nil {
+		return fmt.Errorf("migration007: %w", err)
+	}
+	return nil
 }
 
 // migration006 adds the ocr pipeline. asset_ocr_boxes holds the text read
