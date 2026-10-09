@@ -572,6 +572,32 @@ func (r *Asset) Query(ctx context.Context, q AssetQuery) ([]entity.Asset, error)
 	return scanAssets(rows)
 }
 
+// QueryByChecksum returns the asset with the given checksum as it is listed by
+// Query, or nil if no listed asset (non-deleted, processed and with an online
+// file) has that checksum.
+func (r *Asset) QueryByChecksum(ctx context.Context, checksum []byte) (*entity.Asset, error) {
+	conds, args := assetFilterConds(AssetQuery{})
+	conds = append(conds, "a.checksum = ?")
+	args = append(args, checksum)
+
+	rows, err := r.db.QueryContext(ctx, "select "+assetSelectColumns+`
+		from assets a
+		where `+whereClause(conds), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query asset by checksum: %w", err)
+	}
+	defer rows.Close()
+
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(assets) == 0 {
+		return nil, nil
+	}
+	return &assets[0], nil
+}
+
 // SimilarCursor is the keyset pagination position for similarity results: the
 // cosine distance and id of the last asset of the previous page.
 type SimilarCursor struct {

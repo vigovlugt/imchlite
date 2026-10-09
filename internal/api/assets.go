@@ -309,6 +309,26 @@ func registerAssetRoutes(mux *http.ServeMux, assets *repository.Asset, libraryDi
 		http.ServeFile(w, r, thumbPath)
 	})
 
+	// GET /api/assets/{checksum} returns a single listed asset, for opening
+	// one directly by url.
+	mux.HandleFunc("GET /api/assets/{checksum}", func(w http.ResponseWriter, r *http.Request) {
+		checksum, ok := parseChecksum(r.PathValue("checksum"))
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid checksum"})
+			return
+		}
+		a, err := assets.QueryByChecksum(r.Context(), checksum)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if a == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "asset not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, newAssetResponse(*a))
+	})
+
 	mux.HandleFunc("GET /api/assets", func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		vals := r.URL.Query()

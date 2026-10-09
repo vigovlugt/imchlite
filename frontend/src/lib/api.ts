@@ -133,3 +133,7 @@ export function fetchAssets(
 ): Promise<AssetPage> {
   return getJson<AssetPage>(`/api/assets?${filtersToParams(filters, cursor)}`, signal)
 }
+
+export function fetchAsset(checksum: string, signal?: AbortSignal): Promise<Asset> {
+  return getJson<Asset>(`/api/assets/${checksum}`, signal)
+}

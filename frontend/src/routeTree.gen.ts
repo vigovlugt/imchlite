@@ -9,50 +9,93 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as TimelineRouteImport } from './routes/_timeline'
+import { Route as TimelineIndexRouteImport } from './routes/_timeline/index'
+import { Route as TimelineAssetChecksumRouteImport } from './routes/_timeline/asset.$checksum'
 
-const IndexRoute = IndexRouteImport.update({
+const TimelineRoute = TimelineRouteImport.update({
+  id: '/_timeline',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TimelineIndexRoute = TimelineIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => TimelineRoute,
+} as any)
+const TimelineAssetChecksumRoute = TimelineAssetChecksumRouteImport.update({
+  id: '/asset/$checksum',
+  path: '/asset/$checksum',
+  getParentRoute: () => TimelineRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof TimelineIndexRoute
+  '/asset/$checksum': typeof TimelineAssetChecksumRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
+  '/': typeof TimelineIndexRoute
+  '/asset/$checksum': typeof TimelineAssetChecksumRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_timeline': typeof TimelineRouteWithChildren
+  '/_timeline/': typeof TimelineIndexRoute
+  '/_timeline/asset/$checksum': typeof TimelineAssetChecksumRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/asset/$checksum'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/asset/$checksum'
+  id: '__root__' | '/_timeline' | '/_timeline/' | '/_timeline/asset/$checksum'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  TimelineRoute: typeof TimelineRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/_timeline': {
+      id: '/_timeline'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof TimelineRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_timeline/': {
+      id: '/_timeline/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof TimelineIndexRouteImport
+      parentRoute: typeof TimelineRoute
+    }
+    '/_timeline/asset/$checksum': {
+      id: '/_timeline/asset/$checksum'
+      path: '/asset/$checksum'
+      fullPath: '/asset/$checksum'
+      preLoaderRoute: typeof TimelineAssetChecksumRouteImport
+      parentRoute: typeof TimelineRoute
     }
   }
 }
 
+interface TimelineRouteChildren {
+  TimelineIndexRoute: typeof TimelineIndexRoute
+  TimelineAssetChecksumRoute: typeof TimelineAssetChecksumRoute
+}
+
+const TimelineRouteChildren: TimelineRouteChildren = {
+  TimelineIndexRoute: TimelineIndexRoute,
+  TimelineAssetChecksumRoute: TimelineAssetChecksumRoute,
+}
+
+const TimelineRouteWithChildren = TimelineRoute._addFileChildren(
+  TimelineRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  TimelineRoute: TimelineRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

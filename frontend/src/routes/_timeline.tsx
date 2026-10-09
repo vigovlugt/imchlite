@@ -1,31 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { Link, Outlet, createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { ImageIcon, PlayIcon, StarIcon, XIcon } from "lucide-react";
 import {
-  useInfiniteQuery,
-  useQuery,
-} from "@tanstack/react-query";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  DownloadIcon,
-  ImageIcon,
-  PlayIcon,
-  SparklesIcon,
-  StarIcon,
-  XIcon,
-} from "lucide-react";
-import {
-  downloadUrl,
-  fetchAssets,
   fetchFacets,
   fetchIndexStatus,
-  mediaUrl,
-  previewUrl,
   thumbUrl,
   type Asset,
-  type AssetFilters,
   type IndexStatus,
 } from "#/lib/api";
+import { captureTime, dayFormat, formatDuration } from "#/lib/format";
+import {
+  filtersFromSearch,
+  parseSearch,
+  useAssetsQuery,
+  type AssetSearch,
+} from "#/lib/search";
 import { JustifiedGrid } from "@/components/justified-grid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -63,72 +53,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
-interface AssetSearch {
-  context_query?: string;
-  /** checksum of the asset to find similar assets to */
-  similar_to?: string;
-  type?: "image" | "video";
-  city?: string;
-  country?: string;
-  /** text read from the asset by ocr */
-  text?: string;
-  include?: string;
-  exclude?: string;
-  from?: number;
-  until?: number;
-}
-
-function parseSearch(search: Record<string, unknown>): AssetSearch {
-  const s: AssetSearch = {};
-  if (typeof search.context_query === "string" && search.context_query)
-    s.context_query = search.context_query;
-  // A similar-to search replaces a text search; never send both.
-  else if (
-    typeof search.similar_to === "string" &&
-    /^[0-9a-f]{64}$/.test(search.similar_to)
-  )
-    s.similar_to = search.similar_to;
-  if (search.type === "image" || search.type === "video") s.type = search.type;
-  if (typeof search.city === "string" && search.city) s.city = search.city;
-  if (typeof search.country === "string" && search.country)
-    s.country = search.country;
-  if (typeof search.text === "string" && search.text) s.text = search.text;
-  if (typeof search.include === "string" && search.include)
-    s.include = search.include;
-  if (typeof search.exclude === "string" && search.exclude)
-    s.exclude = search.exclude;
-  if (typeof search.from === "number" && Number.isFinite(search.from))
-    s.from = search.from;
-  if (typeof search.until === "number" && Number.isFinite(search.until))
-    s.until = search.until;
-  return s;
-}
-
-export const Route = createFileRoute("/")({
+// The timeline layout: the sidebar and the asset grid, with the asset viewer
+// rendered on top through the outlet so the grid keeps its scroll position
+// and loaded pages while an asset is open.
+export const Route = createFileRoute("/_timeline")({
   validateSearch: parseSearch,
-  component: Home,
-});
-
-function filtersFromSearch(search: AssetSearch): AssetFilters {
-  return {
-    type: search.type,
-    city: search.city,
-    country: search.country,
-    ocrText: search.text,
-    includePaths: search.include ? search.include.split(",") : [],
-    excludePaths: search.exclude ? search.exclude.split(",") : [],
-    from: search.from,
-    until: search.until,
-    contextQuery: search.context_query,
-    similarTo: search.similar_to,
-  };
-}
-
-const dayFormat = new Intl.DateTimeFormat(undefined, {
-  weekday: "long",
-  year: "numeric",
-  month: "long",
-  day: "numeric",
+  component: Timeline,
 });
 
 interface DayGroup {
@@ -159,11 +89,6 @@ function groupByDay(assets: Asset[]): DayGroup[] {
   return groups;
 }
 
-/** The capture time to display: wall clock when known, else the UTC instant. */
-function captureTime(a: Asset): number | undefined {
-  return a.localDateTime ?? a.dateTime;
-}
-
 function toDateKey(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -184,22 +109,17 @@ function epochToDateInput(sec: number | undefined): string {
   return toDateKey(new Date(sec * 1000));
 }
 
-function formatDuration(ms: number | undefined): string {
-  if (!ms) return "";
-  const total = Math.round(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-function Home() {
+function Timeline() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const filters = useMemo(() => filtersFromSearch(search), [search]);
 
   const setFilters = useCallback(
     (patch: Partial<AssetSearch>) => {
-      void navigate({ search: (prev: AssetSearch) => ({ ...prev, ...patch }) });
+      void navigate({
+        to: "/",
+        search: (prev: AssetSearch) => ({ ...prev, ...patch }),
+      });
     },
     [navigate],
   );
@@ -209,12 +129,7 @@ function Home() {
     queryFn: ({ signal }) => fetchFacets(signal),
   });
 
-  const assetsQuery = useInfiniteQuery({
-    queryKey: ["assets", filters],
-    queryFn: ({ pageParam, signal }) => fetchAssets(filters, pageParam, signal),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (last) => last.nextCursor,
-  });
+  const assetsQuery = useAssetsQuery(filters);
 
   const assets = useMemo(
     () => assetsQuery.data?.pages.flatMap((p) => p.assets) ?? [],
@@ -241,10 +156,6 @@ function Home() {
     observer.observe(el);
     return () => observer.disconnect();
   }, [assetsQuery]);
-
-  const [lightboxIndex, setLightboxIndex] = useState<number | undefined>(
-    undefined,
-  );
 
   const hasFilters =
     search.context_query !== undefined ||
@@ -335,14 +246,7 @@ function Home() {
                 getKey={assetKey}
                 getAspect={assetAspect}
                 renderItem={(asset) => (
-                  <AssetCell
-                    asset={asset}
-                    onClick={() =>
-                      setLightboxIndex(
-                        assets.findIndex((a) => a.id === asset.id),
-                      )
-                    }
-                  />
+                  <AssetCell asset={asset} />
                 )}
               />
               <div ref={sentinelRef} className="h-4" />
@@ -363,14 +267,7 @@ function Home() {
                     getKey={assetKey}
                     getAspect={assetAspect}
                     renderItem={(asset) => (
-                      <AssetCell
-                        asset={asset}
-                        onClick={() =>
-                          setLightboxIndex(
-                            assets.findIndex((a) => a.id === asset.id),
-                          )
-                        }
-                      />
+                      <AssetCell asset={asset} />
                     )}
                   />
                 </section>
@@ -386,29 +283,7 @@ function Home() {
         </div>
       </SidebarInset>
 
-      {lightboxIndex !== undefined && assets[lightboxIndex] && (
-        <Lightbox
-          asset={assets[lightboxIndex]}
-          onClose={() => setLightboxIndex(undefined)}
-          onFindSimilar={() => {
-            setLightboxIndex(undefined);
-            // Start a fresh search: drop all other filters.
-            void navigate({
-              search: { similar_to: assets[lightboxIndex].checksum },
-            });
-          }}
-          onPrev={
-            lightboxIndex > 0
-              ? () => setLightboxIndex(lightboxIndex - 1)
-              : undefined
-          }
-          onNext={
-            lightboxIndex < assets.length - 1
-              ? () => setLightboxIndex(lightboxIndex + 1)
-              : undefined
-          }
-        />
-      )}
+      <Outlet />
     </SidebarProvider>
   );
 }
@@ -420,12 +295,13 @@ const assetKey = (asset: Asset) => asset.id;
 const assetAspect = (asset: Asset) =>
   asset.width && asset.height ? asset.width / asset.height : 1;
 
-function AssetCell({ asset, onClick }: { asset: Asset; onClick: () => void }) {
+function AssetCell({ asset }: { asset: Asset }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group relative h-full w-full overflow-hidden focus:outline-none"
+    <Link
+      to="/asset/$checksum"
+      params={{ checksum: asset.checksum }}
+      search={(prev) => prev}
+      className="group relative block h-full w-full overflow-hidden focus:outline-none"
     >
       <img
         src={thumbUrl(asset.checksum)}
@@ -444,133 +320,7 @@ function AssetCell({ asset, onClick }: { asset: Asset; onClick: () => void }) {
           <StarIcon className="size-4 fill-yellow-400 text-yellow-400" />
         </span>
       )}
-    </button>
-  );
-}
-
-function Lightbox({
-  asset,
-  onClose,
-  onFindSimilar,
-  onPrev,
-  onNext,
-}: {
-  asset: Asset;
-  onClose: () => void;
-  onFindSimilar: () => void;
-  onPrev?: () => void;
-  onNext?: () => void;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft") onPrev?.();
-      if (e.key === "ArrowRight") onNext?.();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, onPrev, onNext]);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex flex-col bg-black/95"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="flex items-start justify-between gap-4 px-4 py-3 text-sm text-neutral-300">
-        <div className="flex min-w-0 flex-col gap-1">
-          <span>
-            {[
-              captureTime(asset)
-                ? dayFormat.format(new Date(captureTime(asset)! * 1000))
-                : undefined,
-              asset.city,
-              asset.country,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </span>
-          {asset.paths && asset.paths.length > 0 && (
-            <ul className="flex flex-col gap-0.5 font-mono text-xs break-all text-neutral-500">
-              {asset.paths.map((p) => (
-                <li key={p}>{p}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            title="Find similar"
-            aria-label="Find similar"
-            onClick={onFindSimilar}
-            className="text-neutral-400 hover:bg-white/10 hover:text-white"
-          >
-            <SparklesIcon />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            render={<a href={downloadUrl(asset.checksum)} download />}
-            nativeButton={false}
-            className="text-neutral-400 hover:bg-white/10 hover:text-white"
-          >
-            <DownloadIcon />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-            className="text-neutral-400 hover:bg-white/10 hover:text-white"
-          >
-            <XIcon />
-          </Button>
-        </div>
-      </div>
-      <div
-        className="relative flex min-h-0 flex-1 items-center justify-center px-14 pb-4"
-        onClick={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        {onPrev && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onPrev}
-            className="absolute left-2 size-16 text-neutral-400 hover:bg-white/10 hover:text-white [&_svg:not([class*='size-'])]:size-10"
-          >
-            <ChevronLeftIcon />
-          </Button>
-        )}
-        {asset.type === "video" ? (
-          <video
-            src={mediaUrl(asset.checksum)}
-            controls
-            autoPlay
-            className="max-h-full max-w-full"
-          />
-        ) : (
-          <img
-            src={previewUrl(asset.checksum)}
-            alt=""
-            className="max-h-full max-w-full object-contain"
-          />
-        )}
-        {onNext && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onNext}
-            className="absolute right-2 size-16 text-neutral-400 hover:bg-white/10 hover:text-white [&_svg:not([class*='size-'])]:size-10"
-          >
-            <ChevronRightIcon />
-          </Button>
-        )}
-      </div>
-    </div>
+    </Link>
   );
 }
 
