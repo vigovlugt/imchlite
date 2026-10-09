@@ -21,6 +21,7 @@ var migrations = []migration{
 	{version: 5, up: migration005},
 	{version: 6, up: migration006},
 	{version: 7, up: migration007},
+	{version: 8, up: migration008},
 }
 
 // migration007 indexes asset_ocr_boxes by asset, in reading order. Without

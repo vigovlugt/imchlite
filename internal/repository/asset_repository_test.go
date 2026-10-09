@@ -53,7 +53,7 @@ func TestQuerySimilar(t *testing.T) {
 			t.Fatalf("insert file: %v", err)
 		}
 		if _, err := db.ExecContext(ctx,
-			`insert into asset_clip_embeddings_vec (rowid, embedding) values (?, ?)`,
+			`insert into asset_clip_embeddings (asset_id, embedding) values (?, ?)`,
 			id, utils.EncodeEmbedding(embeddings[i])); err != nil {
 			t.Fatalf("insert embedding: %v", err)
 		}
@@ -127,7 +127,7 @@ func TestQuerySimilarPagination(t *testing.T) {
 		angle := float64(i) * 0.05
 		embedding := []float32{float32(math.Cos(angle)), float32(math.Sin(angle)), 0, 0}
 		if _, err := db.ExecContext(ctx,
-			`insert into asset_clip_embeddings_vec (rowid, embedding) values (?, ?)`,
+			`insert into asset_clip_embeddings (asset_id, embedding) values (?, ?)`,
 			id, utils.EncodeEmbedding(embedding)); err != nil {
 			t.Fatalf("insert embedding: %v", err)
 		}
@@ -212,7 +212,7 @@ func TestQuerySimilarSkipsOfflineAssets(t *testing.T) {
 			t.Fatalf("insert file: %v", err)
 		}
 		if _, err := db.ExecContext(ctx,
-			`insert into asset_clip_embeddings_vec (rowid, embedding) values (?, ?)`,
+			`insert into asset_clip_embeddings (asset_id, embedding) values (?, ?)`,
 			id, utils.EncodeEmbedding([]float32{1, 0, 0, 0})); err != nil {
 			t.Fatalf("insert embedding: %v", err)
 		}

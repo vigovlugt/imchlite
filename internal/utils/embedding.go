@@ -7,7 +7,7 @@ import (
 )
 
 // EncodeEmbedding packs a float32 vector as a little-endian byte blob, the
-// native vec1 format used by the asset_clip_embeddings_vec table.
+// native vec1 format stored in the asset_clip_embeddings table.
 func EncodeEmbedding(embedding []float32) []byte {
 	blob := make([]byte, 4*len(embedding))
 	for i, v := range embedding {

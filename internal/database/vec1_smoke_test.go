@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"math"
@@ -23,17 +24,11 @@ func TestVec1ExtensionSmoke(t *testing.T) {
 		t.Skipf("no embedded vec1 library: %v", err)
 	}
 
-	lib := vec1.LibraryPath(dir)
-	db, err := Open(t.TempDir(), lib)
+	db, err := Open(t.TempDir(), vec1.LibraryPath(dir))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-
-	ctx := context.Background()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 
 	var info string
 	if err := db.QueryRow("select vec1_info()").Scan(&info); err != nil {
@@ -41,60 +36,112 @@ func TestVec1ExtensionSmoke(t *testing.T) {
 	}
 	t.Logf("vec1: %s", info)
 
-	for i := range 3 {
-		if _, err := db.Exec(
-			`insert into assets (checksum, type, file_modified_at) values (?, 0, 0)`, []byte{byte(i)}); err != nil {
+	var distance float64
+	if err := db.QueryRow("select vec1_cos_distance(?, ?)",
+		float32Blob([]float32{1, 0, 0, 0}), float32Blob([]float32{0, 1, 0, 0})).Scan(&distance); err != nil {
+		t.Fatalf("vec1_cos_distance: %v", err)
+	}
+	if math.Abs(distance-1) > 1e-6 {
+		t.Fatalf("cos distance of orthogonal vectors = %f, want 1", distance)
+	}
+}
+
+// TestMigration008 fills the vec1 virtual table as it was before migration
+// 8, across several flat index blocks and with deleted vectors, and checks
+// that the migration copies every vector unchanged.
+func TestMigration008(t *testing.T) {
+	dir, err := vec1.Setup()
+	if err != nil {
+		t.Skipf("no embedded vec1 library: %v", err)
+	}
+
+	db, err := Open(t.TempDir(), vec1.LibraryPath(dir))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	all := migrations
+	migrations = all[:7]
+	err = Migrate(ctx, db)
+	migrations = all
+	if err != nil {
+		t.Fatalf("migrate to 7: %v", err)
+	}
+
+	const total = 20
+	want := map[int64][]byte{}
+	for i := range total {
+		res, err := db.Exec(
+			`insert into assets (checksum, type, file_modified_at) values (?, 0, 0)`, []byte{byte(i)})
+		if err != nil {
 			t.Fatalf("insert asset: %v", err)
 		}
-		embedding := []float32{1, 0, 0, 0}
-		if i == 1 {
-			embedding = []float32{0, 1, 0, 0}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("last insert id: %v", err)
 		}
+		embedding := float32Blob([]float32{float32(i), 1, -float32(i), 0.5, 0, 2, 3, float32(i) / 7})
 		if _, err := db.Exec(
-			`insert into asset_clip_embeddings_vec (rowid, embedding) values (?, ?)`,
-			i+1, float32Blob(embedding)); err != nil {
+			`insert into asset_clip_embeddings_vec (rowid, embedding) values (?, ?)`, id, embedding); err != nil {
 			t.Fatalf("insert embedding: %v", err)
 		}
+		want[id] = embedding
+	}
+	for _, id := range []int64{3, 11} {
+		if _, err := db.Exec(`delete from assets where id = ?`, id); err != nil {
+			t.Fatalf("delete asset: %v", err)
+		}
+		delete(want, id)
 	}
 
-	// With the flat index configured, the hidden distance column holds the
-	// real distance. Assets 1 and 3 share the identical vector, so the order
-	// between them is arbitrary; asset 2 (orthogonal) must be excluded.
-	rows, err := db.Query(
-		`select v.rowid, v.distance
-		 from asset_clip_embeddings_vec(?1, '{k:2}') v`,
-		float32Blob([]float32{1, 0, 0, 0}))
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	rows, err := db.Query(`select asset_id, embedding from asset_clip_embeddings`)
 	if err != nil {
-		t.Fatalf("knn query: %v", err)
+		t.Fatalf("read embeddings: %v", err)
 	}
 	defer rows.Close()
-
-	got := map[int64]float64{}
+	got := 0
 	for rows.Next() {
 		var id int64
-		var distance float64
-		if err := rows.Scan(&id, &distance); err != nil {
+		var embedding []byte
+		if err := rows.Scan(&id, &embedding); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		got[id] = distance
-		t.Logf("rowid=%d distance=%f", id, distance)
+		if !bytes.Equal(embedding, want[id]) {
+			t.Fatalf("asset %d: embedding %x, want %x", id, embedding, want[id])
+		}
+		got++
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	if len(got) != 2 || got[1] != 0 || got[3] != 0 {
-		t.Fatalf("unexpected neighbors: %v", got)
+	if got != len(want) {
+		t.Fatalf("got %d embeddings, want %d", got, len(want))
 	}
 
-	// Deleting an asset removes its vector through the trigger.
+	var tables int
+	if err := db.QueryRow(`select count(*) from sqlite_master
+		where name like 'asset_clip_embeddings_vec%'`).Scan(&tables); err != nil {
+		t.Fatalf("count vec1 tables: %v", err)
+	}
+	if tables != 0 {
+		t.Fatalf("%d vec1 tables left after migration", tables)
+	}
+
+	// Deleting an asset removes its embedding through the cascade.
 	if _, err := db.Exec(`delete from assets where id = 1`); err != nil {
 		t.Fatalf("delete asset: %v", err)
 	}
 	var count int
-	if err := db.QueryRow(`select count(*) from asset_clip_embeddings_vec`).Scan(&count); err != nil {
-		t.Fatalf("count vectors: %v", err)
+	if err := db.QueryRow(`select count(*) from asset_clip_embeddings`).Scan(&count); err != nil {
+		t.Fatalf("count embeddings: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("got %d vectors after delete, want 2", count)
+	if count != len(want)-1 {
+		t.Fatalf("got %d embeddings after delete, want %d", count, len(want)-1)
 	}
 }

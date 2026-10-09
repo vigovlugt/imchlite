@@ -53,9 +53,9 @@ func (r *Asset) GetByChecksum(ctx context.Context, checksum []byte) (*entity.Ass
 // has not been embedded yet; ok is false if no asset has that checksum.
 func (r *Asset) ClipEmbeddingByChecksum(ctx context.Context, checksum []byte) (id int64, embedding []byte, ok bool, err error) {
 	err = r.db.QueryRowContext(ctx,
-		`select a.id, v.embedding
+		`select a.id, e.embedding
 		 from assets a
-		 left join asset_clip_embeddings_vec v on v.rowid = a.id
+		 left join asset_clip_embeddings e on e.asset_id = a.id
 		 where a.checksum = ? and a.deleted_at is null`, checksum).Scan(&id, &embedding)
 	if err == sql.ErrNoRows {
 		return 0, nil, false, nil
@@ -201,10 +201,8 @@ func (r *Asset) InsertClipEmbedding(ctx context.Context, assetID int64, embeddin
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx,
-		`insert into asset_clip_embeddings_vec (rowid, embedding)
-		 select ?1, ?2 where not exists (
-		     select 1 from asset_clip_embeddings_vec where rowid = ?1
-		 )`, assetID, embedding); err != nil {
+		`insert into asset_clip_embeddings (asset_id, embedding) values (?, ?)
+		 on conflict do nothing`, assetID, embedding); err != nil {
 		return fmt.Errorf("insert clip embedding for asset %d: %w", assetID, err)
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -596,20 +594,20 @@ func (r *Asset) QuerySimilar(ctx context.Context, embedding []byte, q AssetQuery
 
 	conds, args := assetFilterConds(q)
 	if q.SimilarCursor != nil {
-		conds = append(conds, "(v.distance > ? or (v.distance = ? and v.rowid > ?))")
+		conds = append(conds, "(distance > ? or (distance = ? and a.id > ?))")
 		args = append(args, q.SimilarCursor.Distance, q.SimilarCursor.Distance, q.SimilarCursor.ID)
 	}
 
-	// streaming:1 lets vec1 keep yielding neighbors past k until SQLite has
-	// satisfied the limit, which matters because the join and filters can
-	// discard candidates.
-	query := "select " + assetSelectColumns + `, v.distance
-		from asset_clip_embeddings_vec(?, ?) v
-		join assets a on a.id = v.rowid
+	// The filters select the assets first, through the indexes on assets,
+	// and the exact distance is computed for just those. SQLite resolves the
+	// distance alias in where and order by.
+	query := "select " + assetSelectColumns + `, vec1_cos_distance(?, e.embedding) as distance
+		from assets a
+		join asset_clip_embeddings e on e.asset_id = a.id
 		where ` + whereClause(conds) + `
-		order by v.distance asc, v.rowid asc
+		order by distance asc, a.id asc
 		limit ?`
-	args = append([]any{embedding, fmt.Sprintf(`{k:%d, streaming:1}`, limit)}, args...)
+	args = append([]any{embedding}, args...)
 	args = append(args, limit)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
