@@ -163,7 +163,7 @@ func decodeSimilarCursor(s string) (repository.SimilarCursor, error) {
 
 // parseAssetQuery reads the asset filters from query parameters. All
 // parameters are optional. include_path/exclude_path values are SQLite GLOB
-// patterns matched against each file path. When similarity is set the cursor
+// patterns matched against each file path, ignoring ASCII case. When similarity is set the cursor
 // is decoded as a similarity position rather than a capture-time one.
 func parseAssetQuery(vals url.Values, similarity bool) (repository.AssetQuery, error) {
 	q := repository.AssetQuery{

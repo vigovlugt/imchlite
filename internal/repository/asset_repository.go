@@ -271,10 +271,10 @@ type AssetCursor struct {
 // are not filtered on.
 type AssetQuery struct {
 	// IncludePaths: at least one of the asset's files matches one of these
-	// SQLite GLOB patterns (e.g. "2024/*").
+	// SQLite GLOB patterns (e.g. "2024/*"), ignoring ASCII case.
 	IncludePaths []string
 	// ExcludePaths: none of the asset's files matches any of these SQLite
-	// GLOB patterns.
+	// GLOB patterns, ignoring ASCII case.
 	ExcludePaths []string
 	Type         *entity.AssetType
 	City         *string
@@ -460,7 +460,7 @@ func assetFilterConds(q AssetQuery) ([]string, []any) {
 	if len(q.IncludePaths) > 0 {
 		parts := make([]string, len(q.IncludePaths))
 		for i, p := range q.IncludePaths {
-			parts[i] = "f.path glob ?"
+			parts[i] = "lower(f.path) glob lower(?)"
 			args = append(args, p)
 		}
 		conds = append(conds,
@@ -468,7 +468,7 @@ func assetFilterConds(q AssetQuery) ([]string, []any) {
 	}
 	for _, p := range q.ExcludePaths {
 		conds = append(conds,
-			"not exists (select 1 from files f where f.asset_id = a.id and f.path glob ?)")
+			"not exists (select 1 from files f where f.asset_id = a.id and lower(f.path) glob lower(?))")
 		args = append(args, p)
 	}
 	return conds, args
